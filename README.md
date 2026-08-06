@@ -2,6 +2,8 @@
 
 A native **macOS 26+ WYSIWYG Markdown word processor**. Write formatted text like a normal document; files stay clean, portable Markdown (`.md`). Browse whole folders of notes from a Finder-style sidebar.
 
+![Markdowner — folder sidebar and Write mode](docs/images/screenshot.jpg)
+
 ## Features
 
 - **File sidebar** — simplified Finder browser for folders of `.md` files (↑ parent, click folders, filter, live refresh)
@@ -14,6 +16,14 @@ A native **macOS 26+ WYSIWYG Markdown word processor**. Write formatted text lik
 - **Multi-window** — independent workspaces; document back/forward history when following Markdown links
 - **Blank launch** — workspace + sidebar ready (no open dialog); pick files from the nav
 - **macOS 26 design** — `NavigationSplitView`, Liquid Glass controls, `@Observable` browser model, security-scoped folder bookmarks
+
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Data flow, dual Markdown pipelines, links, sandbox, modules |
+| **[docs/MARKDOWN.md](docs/MARKDOWN.md)** | Supported syntax, round-trip behavior, limitations |
+| This README | Features, build, DMG, shortcuts, quick “how it works” |
 
 ## Requirements
 
@@ -47,6 +57,32 @@ Produces:
 
 The DMG is **ad-hoc signed** (fine for personal use). For public download, use a Developer ID certificate and Apple notarization (`notarytool`). First open on another Mac may need **right-click → Open**.
 
+## How it works (quick)
+
+Markdowner is a SwiftUI **WindowGroup** workspace (not `DocumentGroup`): each window has its own open buffer and sidebar folder.
+
+```
+Open .md  →  WorkspaceModel.text
+                 │
+     ┌───────────┼───────────┐
+     ▼           ▼           ▼
+  Write       Source       Split
+  rich        raw MD       source + preview
+  NSTextView               │
+     │                     ▼
+     │              MarkdownDocumentView
+     ▼
+  save UTF-8 .md
+```
+
+- **Write** — `MarkdownRichText` converts Markdown ↔ `NSAttributedString` for a native rich-text editor. Tables keep original Markdown for faithful save.
+- **Source / Split** — edit or view the same string; preview uses `MarkdownBlockParser` + SwiftUI (a separate path from Write’s live typing).
+- **Links** — relative hrefs use an internal lossless scheme; directories move the **sidebar only**; `.md` files use **document** back/forward (**⌘[** / **⌘]**).
+- **Sandbox** — folder access via user grant + security-scoped bookmarks; last sidebar folder is restored on launch.
+- **PDF export** — HTML in a temporary `WKWebView` via `createPDF` (export only; editing is native).
+
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Syntax matrix: [docs/MARKDOWN.md](docs/MARKDOWN.md).
+
 ## Folder sidebar
 
 Built for the “folder of AI Markdown dumps” workflow:
@@ -69,44 +105,47 @@ Built for the “folder of AI Markdown dumps” workflow:
 
 | Action              | Shortcut     |
 |---------------------|--------------|
-| Bold                | ⌘B           |
-| Italic              | ⌘I           |
+| New document        | ⌘N           |
+| New window          | ⌘⇧N          |
+| Open file           | ⌘O           |
+| Open folder         | ⌥⌘O          |
+| Save / Save As      | ⌘S / ⌘⇧S     |
+| Document back       | ⌘[           |
+| Document forward    | ⌘]           |
+| Bold / Italic       | ⌘B / ⌘I      |
+| Strikethrough       | ⌘⇧X          |
 | Link                | ⌘K           |
 | Insert image        | ⇧⌘I          |
-| Inline code         | ⇧⌘E          |
+| Inline code         | ⌘⇧E          |
 | Heading 1–3         | ⌥⌘1 / 2 / 3  |
+| Bullet / numbered   | ⌘⇧8 / ⌘⇧7    |
+| Quote               | ⌘⇧'          |
 | Source mode         | ⌘\\          |
 | Split mode          | ⌥⌘\\         |
 | Find                | ⌘F           |
 | Find & Replace      | ⌥⌘F          |
 | Find next / previous| ⌘G / ⇧⌘G     |
+| Toggle sidebar      | ⌥⌘S          |
+
+Split **scroll sync** is a toggle in the Split chrome (stored as `markdowner.splitScrollSync`, default on).
 
 ## View modes
 
 | Mode   | Description |
 |--------|-------------|
 | **Write**  | WYSIWYG word-processor editing (`NSTextView`) |
-| **Source** | Raw Markdown (monospace) |
+| **Source** | Raw Markdown (monospace) — best for tables and exact hrefs |
 | **Split**  | Source + live preview (optional scroll sync) |
-
-## How it works
-
-Markdowner is a SwiftUI **WindowGroup** workspace app (not `DocumentGroup`):
-
-1. **Write mode** — `MarkdownRichText` converts Markdown ↔ `NSAttributedString` for a native rich-text editor
-2. **Preview / Split** — `MarkdownDocumentView` + `MarkdownInline` render structured blocks and links
-3. **Links** — relative paths use a lossless internal scheme and resolve against the document folder (with name search fallback)
-4. **PDF export** — HTML is rendered in a temporary `WKWebView` via `createPDF`
 
 ## Project layout
 
 ```
 Markdowner/
-  MarkdownerApp.swift          # App entry, menus, shortcuts
+  MarkdownerApp.swift          # App entry, menus, shortcuts, notifications
   EditorContainerView.swift    # NavigationSplitView shell + toolbar
   NativeEditorView.swift       # Write / Source / Split editors
-  MarkdownRichText.swift       # Markdown ↔ NSAttributedString
-  MarkdownDocumentView.swift   # Read-only structured preview
+  MarkdownRichText.swift       # Markdown ↔ NSAttributedString (Write)
+  MarkdownDocumentView.swift   # Block parser + read-only preview
   MarkdownInline.swift         # Inline styling + links
   LinkHandling.swift           # Open .md / dirs / web links
   WorkspaceModel.swift         # Open / save / document history
@@ -115,10 +154,13 @@ Markdowner/
   ExportService.swift          # HTML + PDF export
   FindReplaceBar.swift         # Find / replace UI
   Assets.xcassets/             # App icon + accent color
+docs/
+  ARCHITECTURE.md              # System design and data flow
+  MARKDOWN.md                  # Supported Markdown + limitations
 scripts/
   package-dmg.sh               # Release build + DMG
 ```
 
 ## License
 
-MIT — use it, fork it, ship it.
+MIT — see [LICENSE](LICENSE).
