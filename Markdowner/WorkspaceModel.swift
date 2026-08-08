@@ -13,6 +13,11 @@ final class WorkspaceModel {
     var isDirty = false
     var windowTitle: String = "Untitled"
 
+    /// When set, documents come from a zip package and must not be saved in-place.
+    private(set) var packageSession: PackageSession?
+
+    var isReadOnly: Bool { packageSession != nil }
+
     /// Browser-style history of file URLs visited in this window.
     private(set) var canGoBack = false
     private(set) var canGoForward = false
@@ -31,10 +36,23 @@ final class WorkspaceModel {
 
     // MARK: - Editing
 
+    /// Update buffer text. Marks dirty only when the string actually changes
+    /// (clicks / selection / focus must not trigger a save dialog).
+    /// Read-only package mode ignores edits.
     func updateText(_ newText: String) {
+        guard !isReadOnly else { return }
+        guard newText != text else { return }
         text = newText
         if !isLoading {
             isDirty = true
+            refreshTitle()
+        }
+    }
+
+    func bindPackageSession(_ session: PackageSession?) {
+        packageSession = session
+        if session != nil {
+            isDirty = false
             refreshTitle()
         }
     }
@@ -90,6 +108,7 @@ final class WorkspaceModel {
         isLoading = true
         text = ""
         fileURL = nil
+        LinkHandling.currentDocumentURL = nil
         isDirty = false
         isLoading = false
         refreshTitle()
@@ -137,13 +156,18 @@ final class WorkspaceModel {
             }
 
             isLoading = true
-            text = string
+            // Set file URL + link base *before* text so Write-mode attributed links resolve
+            // against the correct folder on the first paint (not the previous document's).
             fileURL = standardized
+            LinkHandling.documentDirectory = standardized.deletingLastPathComponent()
+            LinkHandling.currentDocumentURL = standardized
+            text = string
             isDirty = false
             isLoading = false
 
             refreshTitle()
-            NSLog("Markdowner: opened %@ (%d chars)", standardized.lastPathComponent, string.count)
+            NSLog("Markdowner: opened %@ (%d chars)%@", standardized.lastPathComponent, string.count,
+                  isReadOnly ? " [read-only package]" : "")
             return true
         } catch {
             if accessed { standardized.stopAccessingSecurityScopedResource() }
@@ -156,6 +180,10 @@ final class WorkspaceModel {
 
     @discardableResult
     func save() -> Bool {
+        if isReadOnly {
+            presentReadOnlyAlert()
+            return false
+        }
         if let fileURL {
             return write(to: fileURL)
         }
@@ -164,6 +192,10 @@ final class WorkspaceModel {
 
     @discardableResult
     func saveAs() -> Bool {
+        if isReadOnly {
+            presentReadOnlyAlert()
+            return false
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = markdownTypes
         panel.canCreateDirectories = true
@@ -186,6 +218,10 @@ final class WorkspaceModel {
     }
 
     private func write(to url: URL, becomingCurrent: Bool = false) -> Bool {
+        if isReadOnly {
+            presentReadOnlyAlert()
+            return false
+        }
         do {
             try text.data(using: .utf8)?.write(to: url, options: .atomic)
             if becomingCurrent || fileURL == nil || fileURL?.standardizedFileURL != url.standardizedFileURL {
@@ -207,7 +243,21 @@ final class WorkspaceModel {
 
     private func refreshTitle() {
         let base = fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
-        windowTitle = isDirty ? "\(base) — Edited" : base
+        if isReadOnly {
+            windowTitle = base
+        } else {
+            windowTitle = isDirty ? "\(base) — Edited" : base
+        }
+    }
+
+    private func presentReadOnlyAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Read-only package"
+        let name = packageSession?.displayName ?? "This package"
+        alert.informativeText = "“\(name)” is open as a read-only zip package.\n\nExtract the package to a folder if you want to edit and save."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func confirmDiscardIfNeeded() -> Bool {

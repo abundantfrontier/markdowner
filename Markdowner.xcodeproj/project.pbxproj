@@ -19,6 +19,8 @@
 		0545852591224BF78CCAF54D /* MarkdownInline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C528D02183524619884ED415 /* MarkdownInline.swift */; };
 		49F81C2D54124AB8B536C283 /* LinkHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA787CF31C6E4F4C878292B9 /* LinkHandling.swift */; };
 		B666FDCBD81445B7B7B632FC /* MarkdownRichText.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEBFEAA260B74686ADF1B63F /* MarkdownRichText.swift */; };
+		B1D0F01A0000000000000001 /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D0F01A0000000000000002 /* BuildInfo.swift */; };
+		B1D0F01A0000000000000010 /* ZipPackageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D0F01A0000000000000011 /* ZipPackageService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +40,8 @@
 		C528D02183524619884ED415 /* MarkdownInline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownInline.swift; sourceTree = "<group>"; };
 		FA787CF31C6E4F4C878292B9 /* LinkHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkHandling.swift; sourceTree = "<group>"; };
 		EEBFEAA260B74686ADF1B63F /* MarkdownRichText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRichText.swift; sourceTree = "<group>"; };
+		B1D0F01A0000000000000002 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		B1D0F01A0000000000000011 /* ZipPackageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZipPackageService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				0F4E1499607B4311B7A666C8 /* MarkdownerApp.swift */,
+				B1D0F01A0000000000000002 /* BuildInfo.swift */,
 				BEA08A3E27FD4271BB88CBE2 /* EditorContainerView.swift */,
 				EEBFEAA260B74686ADF1B63F /* MarkdownRichText.swift */,
 				FA787CF31C6E4F4C878292B9 /* LinkHandling.swift */,
@@ -82,6 +87,7 @@
 				F568B525416C4BE4AED9BEA6 /* FolderBrowser.swift */,
 				B89F1355195141EAAE11958F /* FindReplaceBar.swift */,
 				C6FF939DBC7D4EC8968D2D16 /* ExportService.swift */,
+				B1D0F01A0000000000000011 /* ZipPackageService.swift */,
 				520949B3DE7E419789973245 /* Assets.xcassets */,
 				11B6EFCAE2A54B5C969BC166 /* Info.plist */,
 				451DFBB547F34EB9AF2FA178 /* Markdowner.entitlements */,
@@ -91,11 +97,36 @@
 		};
 /* End PBXGroup section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		B1D0F01A0000000000000003 /* Generate BuildInfo */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate BuildInfo";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Markdowner/BuildInfo.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/generate-build-info.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXNativeTarget section */
 		485F673DD0C74ABD92DF0C3B /* Markdowner */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 3C3C82CF19D942B3BE4956B2 /* Build configuration list for PBXNativeTarget "Markdowner" */;
 			buildPhases = (
+				B1D0F01A0000000000000003 /* Generate BuildInfo */,
 				66B4B655D52D4B598234E13F /* Sources */,
 				0EB24C802E2447879C0C794B /* Frameworks */,
 				0B4E7BF395E646389ADAB5DC /* Resources */,
@@ -165,6 +196,8 @@
 				FEBB412C47DE4F089E0AC3B3 /* FolderBrowser.swift in Sources */,
 				E72D66C3A5E649F8900729F3 /* FindReplaceBar.swift in Sources */,
 				A2C75FD6F5FF4BBE84579DE6 /* ExportService.swift in Sources */,
+				B1D0F01A0000000000000001 /* BuildInfo.swift in Sources */,
+				B1D0F01A0000000000000010 /* ZipPackageService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

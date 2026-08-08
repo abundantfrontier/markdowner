@@ -15,6 +15,7 @@ A native **macOS 26+ WYSIWYG Markdown word processor**. Write formatted text lik
 - **Export** — **File → Export as HTML…** or **Export as PDF…**
 - **Multi-window** — independent workspaces; document back/forward history when following Markdown links
 - **Blank launch** — workspace + sidebar ready (no open dialog); pick files from the nav
+- **Read-only packages** — open a `.zip` of Markdown (and assets) as a browseable tree; banner + no save; **Extract…** to a folder when you need to edit
 - **macOS 26 design** — `NavigationSplitView`, Liquid Glass controls, `@Observable` browser model, security-scoped folder bookmarks
 
 ## Documentation
@@ -24,6 +25,15 @@ A native **macOS 26+ WYSIWYG Markdown word processor**. Write formatted text lik
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Data flow, dual Markdown pipelines, links, sandbox, modules |
 | **[docs/MARKDOWN.md](docs/MARKDOWN.md)** | Supported syntax, round-trip behavior, limitations |
 | This README | Features, build, DMG, shortcuts, quick “how it works” |
+
+### Which build am I running?
+
+Every compile embeds a **build date/time**. In the app:
+
+- **Markdowner → Build Info…** (app menu), or  
+- **Help → Build Info…**
+
+Shows version, Debug/Release, full timestamp, compact stamp (e.g. `20260806.230654`), and the bundle path. Use **Copy** to paste it. Console also logs one line at launch (`Markdowner 1.0 (1) · Debug · built …`).
 
 ## Requirements
 
@@ -87,12 +97,19 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Syntax matrix: [docs/MARK
 
 Built for the “folder of AI Markdown dumps” workflow:
 
-1. **⌥⌘O** or the folder button — grant access to a directory
+1. **⌥⌘O** or the folder button — grant access to a directory  
+   **Open Package…** (toolbar zip icon / **⇧⌥⌘O**) — open a **`.zip`** of Markdown as a read-only tree
 2. Click a **`.md`** file to open it
 3. Click a **folder** (or → / Return) to go deeper; **⌘↑** or the up chevron to go up
 4. Use the breadcrumb to jump to any level of the path
-5. Sidebar remembers the last folder via a security-scoped bookmark
+5. Sidebar remembers the last **folder** via a security-scoped bookmark (packages are session-only)
 6. Directory links inside documents navigate the sidebar only (not document history)
+
+### Zip packages (read-only)
+
+- Expanding a package uses a private cache so relative **links and images** resolve like a normal folder.
+- A **banner** shows “Read-only package”; Save / editing are disabled.
+- **Extract…** (banner or **File → Extract Package…**) copies the tree to a real folder so you can open it and edit with full save support.
 
 | Sidebar action        | Shortcut / gesture     |
 |-----------------------|------------------------|

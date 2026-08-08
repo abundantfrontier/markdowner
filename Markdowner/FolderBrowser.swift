@@ -45,8 +45,15 @@ final class FolderBrowserModel {
     var showOnlyMarkdown = true
     var filterText = ""
 
+    /// Active read-only zip package, if any.
+    private(set) var activePackage: PackageSession?
+
+    var isPackageMode: Bool { activePackage != nil }
+
     /// Called when the user opens a Markdown file from the sidebar (in-window load).
     @ObservationIgnored var onOpenMarkdown: ((URL) -> Void)?
+    /// Called when a package is opened or closed (workspace should flip read-only).
+    @ObservationIgnored var onPackageSessionChanged: ((PackageSession?) -> Void)?
 
     /// Security-scoped roots the user explicitly granted.
     @ObservationIgnored private var scopedRoots: [URL] = []
@@ -56,8 +63,15 @@ final class FolderBrowserModel {
     private let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "mdx"]
 
     /// True when the real filesystem parent exists and is readable (not limited to grant root).
+    /// In package mode, never climb above the extract root.
     var canGoUp: Bool {
         guard let current = currentDirectory else { return false }
+        if let pkg = activePackage {
+            let root = pkg.extractRoot.standardizedFileURL
+            if current.standardizedFileURL.path == root.path { return false }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            return parent.path.hasPrefix(root.path)
+        }
         let parent = current.deletingLastPathComponent().standardizedFileURL
         if parent.path == current.standardizedFileURL.path { return false }
         return canList(parent)
@@ -65,23 +79,47 @@ final class FolderBrowserModel {
 
     /// Real parent folder name (filesystem parent of the current directory).
     var parentFolderName: String? {
-        guard let current = currentDirectory else { return nil }
-        let parent = current.deletingLastPathComponent().standardizedFileURL
-        if parent.path == current.standardizedFileURL.path { return nil }
+        guard canGoUp, let parent = parentDirectory else { return nil }
+        if let pkg = activePackage, parent.standardizedFileURL == pkg.extractRoot.standardizedFileURL {
+            return pkg.displayName
+        }
         return parent.lastPathComponent
     }
 
     /// Real parent URL when `canGoUp`.
     var parentDirectory: URL? {
         guard let current = currentDirectory else { return nil }
+        if let pkg = activePackage {
+            let root = pkg.extractRoot.standardizedFileURL
+            if current.standardizedFileURL.path == root.path { return nil }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.path.hasPrefix(root.path) || parent.path == root.path {
+                return parent
+            }
+            return nil
+        }
         let parent = current.deletingLastPathComponent().standardizedFileURL
         if parent.path == current.standardizedFileURL.path { return nil }
         return parent
     }
 
-    /// Breadcrumbs from the granted root (or volume root climb) down to current.
+    /// Breadcrumbs from the granted root (or package root) down to current.
     var breadcrumbSegments: [String] {
         guard let current = currentDirectory else { return [] }
+        // Package: show zip display name as root segment.
+        if let pkg = activePackage {
+            let rootPath = pkg.extractRoot.standardizedFileURL.path
+            let currentPath = current.standardizedFileURL.path
+            let rootLabel = "\(pkg.displayName).zip"
+            if currentPath == rootPath { return [rootLabel] }
+            if currentPath.hasPrefix(rootPath + "/") {
+                let rel = String(currentPath.dropFirst(rootPath.count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if rel.isEmpty { return [rootLabel] }
+                return [rootLabel] + rel.split(separator: "/").map(String.init)
+            }
+            return [rootLabel]
+        }
         // Prefer path relative to grant root when still under it; otherwise show last few components.
         if let root = rootDirectory {
             let rootPath = root.standardizedFileURL.path
@@ -115,11 +153,84 @@ final class FolderBrowserModel {
         panel.canCreateDirectories = false
         panel.message = "Choose a folder of Markdown files to browse"
         panel.prompt = "Open Folder"
-        if let currentDirectory {
+        if let currentDirectory, activePackage == nil {
             panel.directoryURL = currentDirectory
         }
         if panel.runModal() == .OK, let url = panel.url {
+            closePackageIfNeeded()
             openFolder(url, securityScoped: true)
+        }
+    }
+
+    /// Open a `.zip` of Markdown (and assets) as a read-only package in the sidebar.
+    func pickPackage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = ZipPackageService.zipContentTypes
+        panel.message = "Choose a zip package of Markdown files"
+        panel.prompt = "Open Package"
+        if panel.runModal() == .OK, let url = panel.url {
+            openPackage(url)
+        }
+    }
+
+    func openPackage(_ url: URL) {
+        do {
+            closePackageIfNeeded()
+            let session = try ZipPackageService.open(url)
+            activePackage = session
+            // Browse the expanded tree; do not bookmark the temp extract as “last folder”.
+            rootDirectory = session.extractRoot
+            currentDirectory = session.extractRoot
+            selectedURL = nil
+            errorMessage = nil
+            refresh()
+            startMonitoring(session.extractRoot)
+            onPackageSessionChanged?(session)
+            NSLog("Markdowner: opened package %@ → %@", session.displayName, session.extractRoot.path)
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Couldn’t open package"
+            alert.runModal()
+        }
+    }
+
+    func closePackageIfNeeded() {
+        guard let session = activePackage else { return }
+        stopMonitoring()
+        ZipPackageService.close(session)
+        activePackage = nil
+        onPackageSessionChanged?(nil)
+    }
+
+    /// Copy the package contents to a real folder so the user can edit with full save support.
+    func extractActivePackage() {
+        guard let session = activePackage else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder to extract “\(session.displayName)” into"
+        panel.prompt = "Extract"
+        guard panel.runModal() == .OK, let parent = panel.url else { return }
+        do {
+            let dest = try ZipPackageService.extractToUserFolder(session, destinationParent: parent)
+            let alert = NSAlert()
+            alert.messageText = "Package extracted"
+            alert.informativeText = "Saved to:\n\(dest.path)\n\nOpen that folder to edit and save."
+            alert.addButton(withTitle: "Open Folder")
+            alert.addButton(withTitle: "OK")
+            if alert.runModal() == .alertFirstButtonReturn {
+                closePackageIfNeeded()
+                openFolder(dest, securityScoped: true)
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "Couldn’t extract package"
+            alert.runModal()
         }
     }
 
@@ -136,6 +247,11 @@ final class FolderBrowserModel {
                 scopedRoots.append(folder)
             }
             persistBookmark(for: folder)
+        }
+
+        // Leaving package mode when opening a normal folder.
+        if activePackage != nil, securityScoped {
+            closePackageIfNeeded()
         }
 
         // Initial grant sets the bookmark root, but "Up" always uses the real filesystem parent.
@@ -156,6 +272,21 @@ final class FolderBrowserModel {
             if !isDir.boolValue {
                 folder = folder.deletingLastPathComponent()
             }
+        }
+
+        // Package mode: clamp navigation inside the extract tree.
+        if let pkg = activePackage {
+            let rootPath = pkg.extractRoot.standardizedFileURL.path
+            if !folder.path.hasPrefix(rootPath) {
+                folder = pkg.extractRoot
+            }
+            rootDirectory = pkg.extractRoot
+            currentDirectory = folder
+            selectedURL = nil
+            errorMessage = nil
+            refresh()
+            startMonitoring(folder)
+            return
         }
 
         // Re-assert access via any ancestor security-scoped root.
@@ -340,6 +471,8 @@ final class FolderBrowserModel {
 
     func restoreLastFolderIfNeeded() {
         guard currentDirectory == nil else { return }
+        // Never auto-restore into a temp package extract.
+        guard activePackage == nil else { return }
         guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
         var isStale = false
         do {

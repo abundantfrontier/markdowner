@@ -11,6 +11,9 @@ enum LinkHandling {
     /// Base folder of the open document (for resolving relative links).
     nonisolated(unsafe) static var documentDirectory: URL?
 
+    /// Currently open document URL (for same-file `#anchor` detection).
+    nonisolated(unsafe) static var currentDocumentURL: URL?
+
     /// Extra roots to search when a relative path does not resolve directly
     /// (typically the sidebar folder grant / current browser root).
     nonisolated(unsafe) static var searchRoots: [URL] = []
@@ -30,7 +33,20 @@ enum LinkHandling {
             return .handled
         }
 
+        // Same-document fragment only: `#heading-id` or `url` with empty path + fragment.
+        if let fragment = fragmentOnly(from: url) {
+            navigateToAnchor(fragment)
+            return .handled
+        }
+
+        let fragment = extractFragment(from: url)
+
         guard let local = resolveLocalURL(url) else {
+            // Path failed but we might still have a bare fragment in the raw string
+            if let frag = fragment, !frag.isEmpty {
+                navigateToAnchor(frag)
+                return .handled
+            }
             presentOpenFailed(url, hint: nil)
             return .discarded
         }
@@ -47,7 +63,19 @@ enum LinkHandling {
         }
 
         if isMarkdownPath(local.path) {
-            return openLocalMarkdown(local, newWindow: preferNewWindow)
+            let sameDoc = isSameDocument(local)
+            if sameDoc, let fragment, !fragment.isEmpty {
+                navigateToAnchor(fragment)
+                return .handled
+            }
+            let result = openLocalMarkdown(local, newWindow: preferNewWindow)
+            if let fragment, !fragment.isEmpty, !preferNewWindow {
+                // Scroll after the new file has been loaded into the workspace.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    navigateToAnchor(fragment)
+                }
+            }
+            return result
         }
 
         if FileManager.default.fileExists(atPath: local.path) {
@@ -57,6 +85,299 @@ enum LinkHandling {
 
         presentOpenFailed(local, hint: storedRelativePath(from: url))
         return .discarded
+    }
+
+    /// Post a scroll-to-heading request for the active editor(s).
+    @MainActor
+    static func navigateToAnchor(_ fragment: String) {
+        let cleaned = fragment
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            .removingPercentEncoding ?? fragment
+        let cleaned2 = cleaned
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !cleaned2.isEmpty else { return }
+        NotificationCenter.default.post(name: .markdownerNavigateAnchor, object: cleaned2)
+    }
+
+    /// Scroll an `NSTextView` to a same-document heading.
+    /// - Parameters:
+    ///   - fragment: heading slug or plain title (no leading `#`)
+    ///   - textView: Write or Source editor
+    ///   - markdownSource: raw Markdown (needed in Write mode — display text has no `#` markers)
+    @discardableResult
+    nonisolated static func scrollTextView(
+        _ textView: NSTextView,
+        toAnchor fragment: String,
+        markdownSource: String?
+    ) -> Bool {
+        let displayed = textView.string
+        let source = markdownSource ?? displayed
+        guard let range = rangeOfAnchor(fragment, in: displayed, markdownSource: source) else {
+            return false
+        }
+        textView.window?.makeFirstResponder(textView)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        // Nudge a bit so the heading isn’t glued under the toolbar.
+        if let scroll = textView.enclosingScrollView {
+            let clip = scroll.contentView
+            let y = max(0, clip.bounds.origin.y - 24)
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            scroll.reflectScrolledClipView(clip)
+        }
+        return true
+    }
+
+    /// GitHub-ish slug for a heading line (best-effort).
+    nonisolated static func headingSlug(_ text: String) -> String {
+        let plain = stripInlineMarkup(text)
+        let lowered = plain.lowercased()
+        var out = ""
+        out.reserveCapacity(lowered.count)
+        var lastWasHyphen = false
+        for ch in lowered {
+            if ch.isLetter || ch.isNumber {
+                out.append(ch)
+                lastWasHyphen = false
+            } else if ch == " " || ch == "-" || ch == "_" {
+                if !lastWasHyphen && !out.isEmpty {
+                    out.append("-")
+                    lastWasHyphen = true
+                }
+            }
+            // drop other punctuation (including `.` so "0.5" → "05" like many renderers)
+        }
+        while out.hasSuffix("-") { out.removeLast() }
+        return out
+    }
+
+    /// Remove light inline markup so display text matches Write-mode strings.
+    nonisolated static func stripInlineMarkup(_ text: String) -> String {
+        var t = text
+        let patterns = [
+            #"\*\*([^*]+)\*\*"#,
+            #"__([^_]+)__"#,
+            #"\*([^*]+)\*"#,
+            #"_([^_]+)_"#,
+            #"`([^`]+)`"#,
+            #"~~([^~]+)~~"#,
+            #"\[([^\]]+)\]\([^)]+\)"#, // [label](url) → label
+        ]
+        for p in patterns {
+            t = t.replacingOccurrences(of: p, with: "$1", options: .regularExpression)
+        }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Titles of Markdown headings that match `fragment` (slug or plain text), in document order.
+    nonisolated static func matchingHeadingTitles(_ fragment: String, in markdown: String) -> [String] {
+        let needle = fragment
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !needle.isEmpty else { return [] }
+        let slugNeedle = headingSlug(needle)
+        var titles: [String] = []
+
+        let ns = markdown as NSString
+        var idx = 0
+        while idx < ns.length {
+            var lineStart = 0
+            var lineEnd = 0
+            var contentsEnd = 0
+            ns.getLineStart(
+                &lineStart,
+                end: &lineEnd,
+                contentsEnd: &contentsEnd,
+                for: NSRange(location: idx, length: 0)
+            )
+            let lineRange = NSRange(location: lineStart, length: max(0, contentsEnd - lineStart))
+            let line = ns.substring(with: lineRange)
+
+            if let title = markdownHeadingTitle(line) {
+                let slug = headingSlug(title)
+                let plain = stripInlineMarkup(title)
+                if slug == slugNeedle
+                    || plain.compare(needle, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                    || plain.localizedCaseInsensitiveContains(needle)
+                    || slugNeedle == headingSlug(needle) && slug == slugNeedle {
+                    titles.append(plain)
+                }
+            }
+
+            if lineEnd <= idx { break }
+            idx = lineEnd
+        }
+        return titles
+    }
+
+    /// `"## Hello *world*"` → `"Hello *world*"`; non-headings → nil.
+    nonisolated private static func markdownHeadingTitle(_ line: String) -> String? {
+        guard line.hasPrefix("#") else { return nil }
+        var i = line.startIndex
+        var count = 0
+        while i < line.endIndex, line[i] == "#", count < 6 {
+            i = line.index(after: i)
+            count += 1
+        }
+        guard count >= 1, count <= 6 else { return nil }
+        // Require a space (or end) after hashes — avoids matching horizontal rules later.
+        if i < line.endIndex, !line[i].isWhitespace { return nil }
+        while i < line.endIndex, line[i].isWhitespace { i = line.index(after: i) }
+        let title = String(line[i...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? nil : title
+    }
+
+    /// Find the range of a heading matching `fragment` inside `text`.
+    ///
+    /// - In **Source** mode `text` is Markdown (`## Title`).
+    /// - In **Write** mode `text` is the plain display string (no `#`); pass `markdownSource`
+    ///   so we can resolve the slug against the real headings, then locate the title text.
+    nonisolated static func rangeOfAnchor(
+        _ fragment: String,
+        in text: String,
+        markdownSource: String? = nil
+    ) -> NSRange? {
+        let needle = fragment
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard !needle.isEmpty else { return nil }
+
+        let source = markdownSource ?? text
+        let ns = text as NSString
+
+        // 1. Prefer titles resolved from Markdown headings (works for Write + Source).
+        for title in matchingHeadingTitles(needle, in: source) {
+            let found = ns.range(of: title, options: [.caseInsensitive, .diacriticInsensitive])
+            if found.location != NSNotFound { return found }
+        }
+
+        // 2. Direct Markdown heading lines in `text` itself (Source / raw).
+        if let r = rangeOfMarkdownHeadingLine(needle, in: text) {
+            return r
+        }
+
+        // 3. Plain-line slug match (Write display: each line may be a heading visually).
+        if let r = rangeOfPlainLineSlug(needle, in: text) {
+            return r
+        }
+
+        // 4. Substring fallback
+        let found = ns.range(of: needle, options: [.caseInsensitive])
+        return found.location == NSNotFound ? nil : found
+    }
+
+    nonisolated private static func rangeOfMarkdownHeadingLine(_ fragment: String, in text: String) -> NSRange? {
+        let slugNeedle = headingSlug(fragment)
+        let ns = text as NSString
+        var idx = 0
+        while idx < ns.length {
+            var lineStart = 0
+            var lineEnd = 0
+            var contentsEnd = 0
+            ns.getLineStart(
+                &lineStart,
+                end: &lineEnd,
+                contentsEnd: &contentsEnd,
+                for: NSRange(location: idx, length: 0)
+            )
+            let lineRange = NSRange(location: lineStart, length: max(0, contentsEnd - lineStart))
+            let line = ns.substring(with: lineRange)
+            if let title = markdownHeadingTitle(line) {
+                let slug = headingSlug(title)
+                let plain = stripInlineMarkup(title)
+                if slug == slugNeedle
+                    || plain.compare(fragment, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                    return lineRange
+                }
+            }
+            if lineEnd <= idx { break }
+            idx = lineEnd
+        }
+        return nil
+    }
+
+    nonisolated private static func rangeOfPlainLineSlug(_ fragment: String, in text: String) -> NSRange? {
+        let slugNeedle = headingSlug(fragment)
+        guard !slugNeedle.isEmpty else { return nil }
+        let ns = text as NSString
+        var idx = 0
+        while idx < ns.length {
+            var lineStart = 0
+            var lineEnd = 0
+            var contentsEnd = 0
+            ns.getLineStart(
+                &lineStart,
+                end: &lineEnd,
+                contentsEnd: &contentsEnd,
+                for: NSRange(location: idx, length: 0)
+            )
+            let lineRange = NSRange(location: lineStart, length: max(0, contentsEnd - lineStart))
+            let line = ns.substring(with: lineRange)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Skip empty / list / very long paragraph lines as unlikely headings
+            if !line.isEmpty, line.count < 120, !line.hasPrefix("-"), !line.hasPrefix("*"),
+               headingSlug(line) == slugNeedle {
+                return lineRange
+            }
+            if lineEnd <= idx { break }
+            idx = lineEnd
+        }
+        return nil
+    }
+
+    /// Any fragment on the URL, including `markdowner-rel` query values like `p=file.md#sec`.
+    nonisolated private static func extractFragment(from url: URL) -> String? {
+        if let frag = url.fragment, !frag.isEmpty {
+            return frag.removingPercentEncoding ?? frag
+        }
+        if let rel = storedRelativePath(from: url), let hash = rel.firstIndex(of: "#") {
+            let frag = String(rel[rel.index(after: hash)...])
+            return frag.isEmpty ? nil : (frag.removingPercentEncoding ?? frag)
+        }
+        let abs = url.absoluteString
+        if let hash = abs.firstIndex(of: "#"), hash < abs.endIndex {
+            let frag = String(abs[abs.index(after: hash)...])
+            return frag.isEmpty ? nil : (frag.removingPercentEncoding ?? frag)
+        }
+        return nil
+    }
+
+    nonisolated private static func fragmentOnly(from url: URL) -> String? {
+        // `#heading` → absoluteString often "#heading", fragment set
+        if let frag = url.fragment, !frag.isEmpty {
+            let path = url.path
+            let rel = url.relativeString
+            if path.isEmpty || path == "/" {
+                // No file path — pure in-document anchor
+                if url.scheme == nil || url.scheme?.lowercased() == relativeScheme {
+                    return frag.removingPercentEncoding ?? frag
+                }
+                // file URL with empty path is unusual; still allow
+                if !url.isFileURL, url.host == nil {
+                    return frag.removingPercentEncoding ?? frag
+                }
+            }
+            // Relative string that is only a fragment
+            if rel.hasPrefix("#") {
+                return frag.removingPercentEncoding ?? frag
+            }
+        }
+        let abs = url.absoluteString
+        if abs.hasPrefix("#") {
+            return String(abs.dropFirst()).removingPercentEncoding ?? String(abs.dropFirst())
+        }
+        // markdowner-rel with p=#heading only
+        if let rel = storedRelativePath(from: url), rel.hasPrefix("#") {
+            return String(rel.dropFirst()).removingPercentEncoding ?? String(rel.dropFirst())
+        }
+        return nil
+    }
+
+    nonisolated private static func isSameDocument(_ url: URL) -> Bool {
+        guard let current = currentDocumentURL else { return false }
+        return current.standardizedFileURL.path == url.standardizedFileURL.path
     }
 
     /// Context menu: Open / Open in New Window / Show in Sidebar / Browser / Copy.
@@ -91,7 +412,10 @@ enum LinkHandling {
     // MARK: - Create / decode relative links
 
     /// Build a resolvable URL from a raw Markdown link string (used when creating attributed links).
-    /// Relative paths are stored with `markdowner-rel` so multi-segment paths never lose folders.
+    ///
+    /// Prefer a real `file://` URL when the document folder is known — `NSTextView` and SwiftUI
+    /// `openURL` handle those reliably. Fall back to `markdowner-rel` (lossless multi-segment
+    /// relative) only when there is no base yet; resolution then happens on click.
     nonisolated static func urlFromMarkdownLink(_ string: String) -> URL? {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -106,12 +430,51 @@ enum LinkHandling {
             return URL(string: trimmed)
         }
 
-        // Absolute filesystem path
-        if trimmed.hasPrefix("/") {
-            return URL(fileURLWithPath: trimmed)
+        // Pure in-document anchor: `#section-id`
+        if trimmed.hasPrefix("#") {
+            return URL(string: trimmed)
         }
 
-        // Relative path — store losslessly; resolve only on click.
+        // Split path + fragment: `other.md#section` or `pilot/x/#y`
+        let pathPart: String
+        let fragment: String?
+        if let hash = trimmed.firstIndex(of: "#") {
+            pathPart = String(trimmed[..<hash])
+            let frag = String(trimmed[trimmed.index(after: hash)...])
+            fragment = frag.isEmpty ? nil : frag
+        } else {
+            pathPart = trimmed
+            fragment = nil
+        }
+
+        // Absolute filesystem path
+        if pathPart.hasPrefix("/") {
+            var u = URL(fileURLWithPath: pathPart)
+            if let fragment, var c = URLComponents(url: u, resolvingAgainstBaseURL: false) {
+                c.fragment = fragment
+                u = c.url ?? u
+            }
+            return u
+        }
+
+        // Relative path: resolve against the open document's folder when available so the
+        // attributed-string link is a normal file URL (Cmd/click works; sandbox paths are clear).
+        if pathPart.isEmpty {
+            // Only fragment was present after split — should have been caught above
+            if let fragment { return URL(string: "#\(fragment)") }
+            return nil
+        }
+
+        if let base = documentDirectory,
+           let resolved = resolvePathString(pathPart, base: base) {
+            if let fragment, var c = URLComponents(url: resolved, resolvingAgainstBaseURL: false) {
+                c.fragment = fragment
+                return c.url ?? resolved
+            }
+            return resolved
+        }
+
+        // No document base yet — keep the full relative path (including #frag) in a custom scheme.
         return makeRelativeLinkURL(trimmed)
     }
 
@@ -167,9 +530,19 @@ enum LinkHandling {
     nonisolated static func resolveLocalURL(_ url: URL) -> URL? {
         if isWeb(url) { return nil }
 
-        // 1. Lossless relative scheme
+        // 1. Lossless relative scheme (may include `path#fragment` in the query)
         if let rel = storedRelativePath(from: url) {
-            return resolveRelativeLink(rel)
+            let pathOnly: String
+            if let hash = rel.firstIndex(of: "#") {
+                pathOnly = String(rel[..<hash])
+            } else {
+                pathOnly = rel
+            }
+            if pathOnly.isEmpty {
+                // Pure fragment stored in scheme — not a local file
+                return nil
+            }
+            return resolveRelativeLink(pathOnly)
         }
 
         // 2. Already an absolute existing path

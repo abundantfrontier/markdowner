@@ -57,6 +57,14 @@ struct FileSidebarView: View {
                 .buttonStyle(.borderless)
                 .help("Open Folder… (⌥⌘O)")
                 .keyboardShortcut("o", modifiers: [.command, .option])
+
+                Button {
+                    browser.pickPackage()
+                } label: {
+                    Image(systemName: "doc.zipper")
+                }
+                .buttonStyle(.borderless)
+                .help("Open Package… (.zip)")
             }
 
             // Clickable breadcrumb trail

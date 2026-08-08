@@ -89,6 +89,9 @@ struct EditorContainerView: View {
             browser.onOpenMarkdown = { [workspace] url in
                 workspace.openFile(at: url)
             }
+            browser.onPackageSessionChanged = { [workspace] session in
+                workspace.bindPackageSession(session)
+            }
             if isKeyWindow {
                 updateLinkResolutionBases()
             }
@@ -115,19 +118,23 @@ struct EditorContainerView: View {
     }
 
     private var subtitle: String {
+        if let pkg = browser.activePackage ?? workspace.packageSession {
+            return "\(pkg.displayName).zip · Read-only"
+        }
         if let folder = workspace.fileURL?.deletingLastPathComponent().lastPathComponent {
             return folder
         }
         if let current = browser.currentDirectory?.lastPathComponent {
             return current
         }
-        return "Open a folder to browse Markdown"
+        return "Open a folder or package to browse Markdown"
     }
 
     /// Keep link resolution rooted on the open document + sidebar folders.
     private func updateLinkResolutionBases() {
         LinkHandling.documentDirectory = workspace.fileURL?.deletingLastPathComponent()
             ?? browser.currentDirectory
+        LinkHandling.currentDocumentURL = workspace.fileURL
         var roots: [URL] = []
         if let root = browser.rootDirectory { roots.append(root) }
         if let current = browser.currentDirectory { roots.append(current) }
@@ -138,6 +145,10 @@ struct EditorContainerView: View {
 
     private func editorDetail(documentText: String) -> some View {
         VStack(spacing: 0) {
+            if workspace.isReadOnly {
+                packageReadOnlyBanner
+            }
+
             if showFind {
                 FindReplaceBar(
                     isPresented: $showFind,
@@ -180,7 +191,8 @@ struct EditorContainerView: View {
                     findQuery: findQuery,
                     findCaseSensitive: findCaseSensitive,
                     findNonce: findNonce,
-                    findDirection: findDirection
+                    findDirection: findDirection,
+                    isReadOnly: workspace.isReadOnly
                 )
 
                 if workspace.fileURL == nil
@@ -205,7 +217,40 @@ struct EditorContainerView: View {
     @State private var findNonce: Int = 0
     @State private var findDirection: Int = 1
 
+    private var packageReadOnlyBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.doc.fill")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Read-only package")
+                    .font(.subheadline.weight(.semibold))
+                Text({
+                    let name = workspace.packageSession?.displayName
+                        ?? browser.activePackage?.displayName
+                        ?? "Package"
+                    return "“\(name).zip” — browsing only. Extract to a folder to edit and save."
+                }())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button("Extract…") {
+                browser.extractActivePackage()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(browser.activePackage == nil)
+            .help("Copy package contents to a folder you can edit")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
     private func replaceCurrent(_ replacement: String) {
+        guard !workspace.isReadOnly else { return }
         guard !findQuery.isEmpty else { return }
         let options: String.CompareOptions = findCaseSensitive ? [] : [.caseInsensitive]
         guard let range = workspace.text.range(of: findQuery, options: options) else { return }
@@ -232,7 +277,7 @@ struct EditorContainerView: View {
             Text("Start writing, or pick a file in the sidebar")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            Text("⌥⌘O opens a folder · click any .md to load it here")
+            Text("⌥⌘O opens a folder · Open Package for a .zip · click any .md to load it here")
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         }
@@ -271,6 +316,13 @@ struct EditorContainerView: View {
                 Image(systemName: "folder")
             }
             .help("Open Folder… (⌥⌘O)")
+
+            Button {
+                browser.pickPackage()
+            } label: {
+                Image(systemName: "doc.zipper")
+            }
+            .help("Open Package… (.zip of Markdown files)")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -290,6 +342,7 @@ struct EditorContainerView: View {
                 Image(systemName: "bold")
             }
             .help("Bold (⌘B)")
+            .disabled(workspace.isReadOnly)
 
             Button {
                 wrapSelection("*", "*")
@@ -297,6 +350,7 @@ struct EditorContainerView: View {
                 Image(systemName: "italic")
             }
             .help("Italic (⌘I)")
+            .disabled(workspace.isReadOnly)
 
             Button {
                 wrapSelection("[", "](url)")
@@ -304,6 +358,7 @@ struct EditorContainerView: View {
                 Image(systemName: "link")
             }
             .help("Link")
+            .disabled(workspace.isReadOnly)
 
             Button {
                 insertImageMarkdown()
@@ -311,6 +366,7 @@ struct EditorContainerView: View {
                 Image(systemName: "photo")
             }
             .help("Insert image")
+            .disabled(workspace.isReadOnly)
 
             Button {
                 showFind = true
@@ -321,6 +377,14 @@ struct EditorContainerView: View {
             .help("Find (⌘F)")
 
             Button {
+                openCurrentInNewWindow()
+            } label: {
+                Image(systemName: "rectangle.on.rectangle")
+            }
+            .help("Open this document in a new window (side‑by‑side compare)")
+            .disabled(workspace.fileURL == nil)
+
+            Button {
                 workspace.save()
             } label: {
                 if workspace.isDirty {
@@ -329,10 +393,11 @@ struct EditorContainerView: View {
                     Label("Save", systemImage: "square.and.arrow.down")
                 }
             }
-            .help(workspace.isDirty ? "Save changes (⌘S)" : "Save (⌘S)")
-            .disabled(!workspace.isDirty && workspace.fileURL != nil)
-            // Always enabled when untitled so first save works
-            .opacity(workspace.isDirty || workspace.fileURL == nil ? 1 : 0.55)
+            .help(workspace.isReadOnly
+                  ? "Read-only package — extract to edit and save"
+                  : (workspace.isDirty ? "Save changes (⌘S)" : "Save (⌘S)"))
+            .disabled(workspace.isReadOnly || (!workspace.isDirty && workspace.fileURL != nil))
+            .opacity(workspace.isReadOnly ? 0.4 : (workspace.isDirty || workspace.fileURL == nil ? 1 : 0.55))
 
             Menu {
                 Button("Save") { workspace.save() }
@@ -398,6 +463,12 @@ struct EditorContainerView: View {
         ExportService.exportPDF(markdown: workspace.text, suggestedName: name)
     }
 
+    /// Open the same file in another workspace window for compare / dual panes.
+    private func openCurrentInNewWindow() {
+        guard let url = workspace.fileURL else { return }
+        NotificationCenter.default.post(name: .markdownerOpenFileURLInNewWindow, object: url)
+    }
+
 }
 
 /// Holds a URL that a brand-new window should open on appear.
@@ -435,6 +506,12 @@ private struct WorkspaceCommandHandlers: ViewModifier {
                 PendingWindowOpen.fileURL = url
                 openWindow(id: "workspace")
             }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerDuplicateDocumentWindow)) { _ in
+                guard isKeyWindow else { return }
+                guard let url = workspace.fileURL else { return }
+                PendingWindowOpen.fileURL = url
+                openWindow(id: "workspace")
+            }
             .onReceive(NotificationCenter.default.publisher(for: .markdownerShowFind)) { note in
                 guard isKeyWindow else { return }
                 showFind = true
@@ -467,6 +544,15 @@ private struct WorkspaceCommandHandlers: ViewModifier {
                 guard isKeyWindow else { return }
                 columnVisibility = .all
                 browser.pickFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenPackage)) { _ in
+                guard isKeyWindow else { return }
+                columnVisibility = .all
+                browser.pickPackage()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerExtractPackage)) { _ in
+                guard isKeyWindow else { return }
+                browser.extractActivePackage()
             }
             .onReceive(NotificationCenter.default.publisher(for: .markdownerToggleSidebar)) { _ in
                 guard isKeyWindow else { return }

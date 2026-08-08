@@ -47,6 +47,11 @@ struct MarkdownerApp: App {
                 NotificationCenter.default.post(name: .markdownerOpenFolder, object: nil)
             }
             .keyboardShortcut("o", modifiers: [.command, .option])
+
+            Button("Open Package…") {
+                NotificationCenter.default.post(name: .markdownerOpenPackage, object: nil)
+            }
+            .keyboardShortcut("o", modifiers: [.command, .option, .shift])
         }
 
         CommandGroup(replacing: .saveItem) {
@@ -59,6 +64,12 @@ struct MarkdownerApp: App {
                 NotificationCenter.default.post(name: .markdownerSaveDocumentAs, object: nil)
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button("Extract Package…") {
+                NotificationCenter.default.post(name: .markdownerExtractPackage, object: nil)
+            }
         }
     }
 
@@ -235,11 +246,22 @@ struct MarkdownerApp: App {
                     NSWorkspace.shared.open(url)
                 }
             }
+            Divider()
+            Button("Build Info…") {
+                BuildInfo.presentPanel()
+            }
+        }
+
+        // Also under the app menu next to standard About (easier to find).
+        CommandGroup(after: .appInfo) {
+            Button("Build Info…") {
+                BuildInfo.presentPanel()
+            }
         }
     }
 }
 
-/// Menu item that opens another workspace window (multi-window).
+/// Menu items that open another workspace window (multi-window).
 private struct NewWindowCommandButton: View {
     @Environment(\.openWindow) private var openWindow
 
@@ -248,6 +270,11 @@ private struct NewWindowCommandButton: View {
             openWindow(id: "workspace")
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
+
+        Button("Open Current Document in New Window") {
+            NotificationCenter.default.post(name: .markdownerDuplicateDocumentWindow, object: nil)
+        }
+        .keyboardShortcut("d", modifiers: [.command, .shift])
     }
 }
 
@@ -257,6 +284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure we never present the legacy NSDocument open panel on launch.
         NSDocumentController.shared.closeAllDocuments(withDelegate: nil, didCloseAllSelector: nil, contextInfo: nil)
+        // Log identity so Console/debug sessions can confirm which binary is running.
+        NSLog("%@", BuildInfo.summary)
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
@@ -292,6 +321,8 @@ extension Notification.Name {
     static let markdownerExport = Notification.Name("markdowner.export")
     static let markdownerInsertImage = Notification.Name("markdowner.insertImage")
     static let markdownerOpenFolder = Notification.Name("markdowner.openFolder")
+    static let markdownerOpenPackage = Notification.Name("markdowner.openPackage")
+    static let markdownerExtractPackage = Notification.Name("markdowner.extractPackage")
     static let markdownerToggleSidebar = Notification.Name("markdowner.toggleSidebar")
     static let markdownerNewDocument = Notification.Name("markdowner.newDocument")
     static let markdownerOpenDocument = Notification.Name("markdowner.openDocument")
@@ -299,7 +330,9 @@ extension Notification.Name {
     static let markdownerSaveDocumentAs = Notification.Name("markdowner.saveDocumentAs")
     static let markdownerOpenFileURL = Notification.Name("markdowner.openFileURL")
     static let markdownerOpenFileURLInNewWindow = Notification.Name("markdowner.openFileURLInNewWindow")
+    static let markdownerDuplicateDocumentWindow = Notification.Name("markdowner.duplicateDocumentWindow")
     static let markdownerNavigateDirectory = Notification.Name("markdowner.navigateDirectory")
+    static let markdownerNavigateAnchor = Notification.Name("markdowner.navigateAnchor")
     static let markdownerFindInEditor = Notification.Name("markdowner.findInEditor")
     static let markdownerScrollFraction = Notification.Name("markdowner.scrollFraction")
 }
