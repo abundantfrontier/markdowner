@@ -9,9 +9,12 @@ xcuserdata/
 *.dSYM.zip
 *.dSYM
 
-# Packaging output
+# Packaging output (local build scratch)
 dist/
+
+# Allow versioned release DMGs in the repo
 *.dmg
+!releases/*.dmg
 
 # macOS
 .DS_Store

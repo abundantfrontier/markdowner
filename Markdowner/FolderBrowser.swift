@@ -8,6 +8,8 @@ struct FolderEntry: Identifiable, Hashable, Sendable {
     enum Kind: Hashable, Sendable {
         case directory
         case markdown
+        /// A `.zip` Markdown package — always listed, opens as read-only package.
+        case package
         case other
     }
 
@@ -22,7 +24,23 @@ struct FolderEntry: Identifiable, Hashable, Sendable {
         switch kind {
         case .directory: return "folder.fill"
         case .markdown: return "doc.richtext.fill"
-        case .other: return "doc"
+        case .package: return "doc.zipper"
+        case .other:
+            let ext = url.pathExtension.lowercased()
+            switch ext {
+            case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp":
+                return "photo"
+            case "pdf":
+                return "doc.richtext"
+            case "html", "htm":
+                return "chevron.left.forwardslash.chevron.right"
+            case "json", "yaml", "yml", "toml", "csv":
+                return "curlybraces"
+            case "txt", "rtf":
+                return "doc.plaintext"
+            default:
+                return "doc"
+            }
         }
     }
 }
@@ -41,7 +59,10 @@ final class FolderBrowserModel {
     private(set) var rootDirectory: URL?
     private(set) var entries: [FolderEntry] = []
     private(set) var errorMessage: String?
+    /// Files hidden by the “Markdown only” filter in the current directory (not folders).
+    private(set) var hiddenNonMarkdownCount: Int = 0
     var selectedURL: URL?
+    /// When true, list folders + Markdown; hide other file types (images, txt, …).
     var showOnlyMarkdown = true
     var filterText = ""
 
@@ -49,6 +70,12 @@ final class FolderBrowserModel {
     private(set) var activePackage: PackageSession?
 
     var isPackageMode: Bool { activePackage != nil }
+
+    /// Root label for breadcrumbs / “up” — includes `.zip` in package mode.
+    var rootDisplayName: String {
+        if let pkg = activePackage { return pkg.sidebarRootLabel }
+        return rootDirectory?.lastPathComponent ?? "Files"
+    }
 
     /// Called when the user opens a Markdown file from the sidebar (in-window load).
     @ObservationIgnored var onOpenMarkdown: ((URL) -> Void)?
@@ -81,7 +108,7 @@ final class FolderBrowserModel {
     var parentFolderName: String? {
         guard canGoUp, let parent = parentDirectory else { return nil }
         if let pkg = activePackage, parent.standardizedFileURL == pkg.extractRoot.standardizedFileURL {
-            return pkg.displayName
+            return pkg.sidebarRootLabel
         }
         return parent.lastPathComponent
     }
@@ -110,7 +137,7 @@ final class FolderBrowserModel {
         if let pkg = activePackage {
             let rootPath = pkg.extractRoot.standardizedFileURL.path
             let currentPath = current.standardizedFileURL.path
-            let rootLabel = "\(pkg.displayName).zip"
+            let rootLabel = pkg.sidebarRootLabel
             if currentPath == rootPath { return [rootLabel] }
             if currentPath.hasPrefix(rootPath + "/") {
                 let rel = String(currentPath.dropFirst(rootPath.count))
@@ -389,6 +416,8 @@ final class FolderBrowserModel {
         case .markdown:
             selectedURL = entry.url
             openMarkdownFile(entry.url)
+        case .package:
+            openPackage(entry.url)
         case .other:
             NSWorkspace.shared.open(entry.url)
         }
@@ -397,6 +426,7 @@ final class FolderBrowserModel {
     func refresh() {
         guard let directory = currentDirectory else {
             entries = []
+            hiddenNonMarkdownCount = 0
             return
         }
 
@@ -414,6 +444,7 @@ final class FolderBrowserModel {
             )
 
             var built: [FolderEntry] = []
+            var hiddenOthers = 0
             for url in urls {
                 let values = try? url.resourceValues(forKeys: [
                     .isDirectoryKey,
@@ -430,13 +461,19 @@ final class FolderBrowserModel {
                 let kind: FolderEntry.Kind
                 if isDirectory {
                     kind = .directory
+                } else if ext == "zip" {
+                    // Zip packages stay visible even with “Folders + Markdown” so you can open them.
+                    kind = .package
                 } else if markdownExtensions.contains(ext) {
                     kind = .markdown
                 } else {
                     kind = .other
                 }
 
-                if showOnlyMarkdown && kind == .other { continue }
+                if showOnlyMarkdown && kind == .other {
+                    hiddenOthers += 1
+                    continue
+                }
 
                 built.append(
                     FolderEntry(
@@ -450,9 +487,18 @@ final class FolderBrowserModel {
                 )
             }
 
+            // Folders, then packages, then markdown, then other — alpha within each.
             built.sort { a, b in
-                if a.kind == .directory && b.kind != .directory { return true }
-                if a.kind != .directory && b.kind == .directory { return false }
+                func rank(_ k: FolderEntry.Kind) -> Int {
+                    switch k {
+                    case .directory: return 0
+                    case .package: return 1
+                    case .markdown: return 2
+                    case .other: return 3
+                    }
+                }
+                let ra = rank(a.kind), rb = rank(b.kind)
+                if ra != rb { return ra < rb }
                 return a.name.localizedStandardCompare(b.name) == .orderedAscending
             }
 
@@ -462,9 +508,11 @@ final class FolderBrowserModel {
             }
 
             entries = built
+            hiddenNonMarkdownCount = hiddenOthers
             errorMessage = nil
         } catch {
             entries = []
+            hiddenNonMarkdownCount = 0
             errorMessage = error.localizedDescription
         }
     }

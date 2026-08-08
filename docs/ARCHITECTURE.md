@@ -6,6 +6,7 @@ How Markdowner is structured and how data moves through the app. For supported M
 
 - Feel like a **word processor**, not a code editor, while keeping files as plain `.md`
 - Browse a **folder of notes** without fighting macOS sandbox rules
+- Open **read-only `.zip` packages** as a virtual folder tree (see [PACKAGES.md](PACKAGES.md))
 - Support **multi-window** workspaces with independent open files and sidebar paths
 - Prefer **native AppKit/SwiftUI** over web views for editing (reliable on current macOS)
 
@@ -32,8 +33,9 @@ Each window owns:
 
 | Piece | Role |
 |-------|------|
-| `WorkspaceModel` | Buffer text, dirty flag, file URL, document back/forward |
-| `FolderBrowserModel` | Sidebar directory, security-scoped roots, live listing |
+| `WorkspaceModel` | Buffer text, dirty flag, file URL, document history, package read-only |
+| `FolderBrowserModel` | Sidebar directory / package root, bookmarks, live listing |
+| `ZipPackageService` | Expand zip → cache; package session lifecycle |
 | `NativeEditorView` | Write / Source / Split UI bound to `workspace.text` |
 | `LinkHandling` bases | Document folder + sidebar roots for resolving relative links |
 
@@ -94,7 +96,26 @@ There is **no autosave**. Dirty state is reflected in the window title (`— Edi
 | **Source** | Monospace `NSTextView` of raw Markdown | (none) |
 | **Split** | Source left + block preview right | `MarkdownDocumentView` in `NSScrollView` |
 
-Optional **scroll sync** in Split (`@AppStorage("markdowner.splitScrollSync")`, default on) mirrors vertical fraction between panes via `.markdownerScrollFraction`.
+Optional **scroll sync** in Split (`@AppStorage("markdowner.splitScrollSync.v2")`, default **off**) aligns panes by **Markdown character offset + line fingerprints** (`SplitScrollSync`), not equal pixel heights.
+
+## Zip packages
+
+```
+User picks .zip
+    → ZipPackageService.open
+    → unzip -d ~/Library/Caches/MarkdownerPackages/<uuid>/
+    → FolderBrowserModel.activePackage = session
+    → sidebar root = extractRoot (clamped navigation)
+    → WorkspaceModel.packageSession → isReadOnly
+    → banner + non-editable editors + save blocked
+Extract…
+    → copy extractRoot → user folder
+    → optional openFolder (writable)
+```
+
+- List kind `.package` for `.zip` in normal folder browsing (always visible with the MD filter).
+- Links/images use normal `file://` paths under the extract tree.
+- Details and product rules: [PACKAGES.md](PACKAGES.md).
 
 ## Two Markdown pipelines
 
@@ -223,7 +244,9 @@ Menus and toolbars avoid hard wiring by posting names defined on `Notification.N
 | `MarkdownerApp.swift` | App entry, menus, notifications, app delegate |
 | `EditorContainerView.swift` | Split shell, toolbar, wire models + link bases |
 | `WorkspaceModel.swift` | Text buffer, open/save, document history |
-| `FolderBrowser.swift` | Directory model, bookmarks, monitoring |
+| `FolderBrowser.swift` | Directory / package root, bookmarks, monitoring |
+| `ZipPackageService.swift` | Zip expand, extract-to-folder, session |
+| `BuildInfo.swift` | Generated per compile (timestamp) |
 | `FileSidebarView.swift` | Sidebar UI |
 | `NativeEditorView.swift` | Write / Source / Split, find in text views |
 | `MarkdownRichText.swift` | Markdown ↔ `NSAttributedString` for Write |

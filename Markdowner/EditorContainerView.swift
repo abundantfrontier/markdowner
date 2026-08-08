@@ -119,7 +119,7 @@ struct EditorContainerView: View {
 
     private var subtitle: String {
         if let pkg = browser.activePackage ?? workspace.packageSession {
-            return "\(pkg.displayName).zip · Read-only"
+            return "\(pkg.sidebarRootLabel) · Read-only"
         }
         if let folder = workspace.fileURL?.deletingLastPathComponent().lastPathComponent {
             return folder
@@ -225,10 +225,10 @@ struct EditorContainerView: View {
                 Text("Read-only package")
                     .font(.subheadline.weight(.semibold))
                 Text({
-                    let name = workspace.packageSession?.displayName
-                        ?? browser.activePackage?.displayName
-                        ?? "Package"
-                    return "“\(name).zip” — browsing only. Extract to a folder to edit and save."
+                    let name = workspace.packageSession?.sidebarRootLabel
+                        ?? browser.activePackage?.sidebarRootLabel
+                        ?? "package.zip"
+                    return "“\(name)” — browsing only. Extract to a folder to edit and save."
                 }())
                     .font(.caption)
                     .foregroundStyle(.secondary)

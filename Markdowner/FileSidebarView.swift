@@ -67,6 +67,28 @@ struct FileSidebarView: View {
                 .help("Open Package… (.zip)")
             }
 
+            // Package identity (always includes .zip so it’s obvious this isn’t a normal folder)
+            if browser.isPackageMode, let pkg = browser.activePackage {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.zipper")
+                        .foregroundStyle(Color.accentColor)
+                    Text(pkg.sidebarRootLabel)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .help(pkg.packageURL.path)
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Read-only")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+
             // Clickable breadcrumb trail
             if !browser.breadcrumbSegments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -77,8 +99,16 @@ struct FileSidebarView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                             }
-                            Button(segment) {
+                            Button {
                                 browser.navigateToBreadcrumbIndex(index)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    if index == 0, browser.isPackageMode {
+                                        Image(systemName: "doc.zipper")
+                                            .font(.caption2)
+                                    }
+                                    Text(segment)
+                                }
                             }
                             .buttonStyle(.plain)
                             .font(.caption.weight(index == browser.breadcrumbSegments.count - 1 ? .semibold : .regular))
@@ -88,14 +118,16 @@ struct FileSidebarView: View {
                         }
                     }
                 }
-                .help(browser.currentDirectory?.path ?? "")
+                .help(browser.isPackageMode
+                      ? (browser.activePackage.map { "\($0.sidebarRootLabel) — \($0.packageURL.path)" } ?? "")
+                      : (browser.currentDirectory?.path ?? ""))
             }
 
             HStack(spacing: 6) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .foregroundStyle(.secondary)
                     .font(.caption)
-                TextField("Filter files", text: $browser.filterText)
+                TextField("Filter by name", text: $browser.filterText)
                     .textFieldStyle(.plain)
                     .font(.callout)
                     .onChange(of: browser.filterText) { _, _ in
@@ -202,18 +234,23 @@ struct FileSidebarView: View {
                     }
                     .onTapGesture(count: 1) {
                         browser.selectedURL = entry.url
-                        if entry.kind == .markdown {
+                        switch entry.kind {
+                        case .markdown, .directory, .package:
                             browser.openEntry(entry)
-                        } else if entry.kind == .directory {
-                            // Single-click enters folder (more discoverable than double-click only)
-                            browser.openEntry(entry)
+                        case .other:
+                            break
                         }
                     }
                     .contextMenu {
-                        if entry.kind == .directory {
+                        switch entry.kind {
+                        case .directory:
                             Button("Open Folder") { browser.openEntry(entry) }
-                        } else if entry.kind == .markdown {
+                        case .markdown:
                             Button("Open") { browser.openEntry(entry) }
+                        case .package:
+                            Button("Open Package") { browser.openEntry(entry) }
+                        case .other:
+                            Button("Open with Default App") { browser.openEntry(entry) }
                         }
                         Button("Show in Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting([entry.url])
@@ -237,7 +274,7 @@ struct FileSidebarView: View {
                 openSelection()
             }
             .onKeyPress(.rightArrow) {
-                if let entry = selectedEntry, entry.kind == .directory {
+                if let entry = selectedEntry, entry.kind == .directory || entry.kind == .package {
                     browser.openEntry(entry)
                     return .handled
                 }
@@ -257,34 +294,64 @@ struct FileSidebarView: View {
         ContentUnavailableView {
             Label("Browse a folder", systemImage: "folder.badge.questionmark")
         } description: {
-            Text("Point the sidebar at a folder of AI-generated Markdown (or any notes) and click files to open them.")
+            Text("Open a folder of notes, or a .zip package, then click Markdown files to open them.")
         } actions: {
             Button("Open Folder…") {
                 browser.pickFolder()
             }
             .buttonStyle(.borderedProminent)
+            Button("Open Package…") {
+                browser.pickPackage()
+            }
+            .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
 
     private var footer: some View {
-        HStack {
-            Toggle(isOn: $browser.showOnlyMarkdown) {
-                Text("Markdown only")
-                    .font(.caption)
-            }
-            .toggleStyle(.checkbox)
-            .onChange(of: browser.showOnlyMarkdown) { _, _ in
-                browser.refresh()
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Toggle(isOn: $browser.showOnlyMarkdown) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(browser.showOnlyMarkdown ? "Folders + Markdown + Zips" : "All files")
+                            .font(.caption)
+                        Text(browser.showOnlyMarkdown
+                             ? "Hide images/txt; still shows .zip packages"
+                             : "Show every file in this folder")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .help(browser.showOnlyMarkdown
+                      ? "On: folders, .md, and .zip packages. Turn off for images and other files."
+                      : "Off: list all files. Turn on to focus on Markdown and packages.")
+                .onChange(of: browser.showOnlyMarkdown) { _, _ in
+                    browser.refresh()
+                }
+
+                Spacer(minLength: 8)
+
+                Text(countLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .multilineTextAlignment(.trailing)
             }
 
-            Spacer()
-
-            Text(countLabel)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+            if browser.showOnlyMarkdown, browser.hiddenNonMarkdownCount > 0 {
+                Button {
+                    browser.showOnlyMarkdown = false
+                    browser.refresh()
+                } label: {
+                    Text("\(browser.hiddenNonMarkdownCount) other file\(browser.hiddenNonMarkdownCount == 1 ? "" : "s") hidden — show all")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -292,9 +359,15 @@ struct FileSidebarView: View {
 
     private var countLabel: String {
         let folders = browser.entries.filter { $0.kind == .directory }.count
-        let files = browser.entries.filter { $0.kind != .directory }.count
-        if folders == 0 { return "\(files)" }
-        return "\(folders) · \(files)"
+        let packages = browser.entries.filter { $0.kind == .package }.count
+        let md = browser.entries.filter { $0.kind == .markdown }.count
+        let other = browser.entries.filter { $0.kind == .other }.count
+        var parts: [String] = []
+        if folders > 0 { parts.append("\(folders) folder\(folders == 1 ? "" : "s")") }
+        if packages > 0 { parts.append("\(packages) zip") }
+        if md > 0 { parts.append("\(md) md") }
+        if other > 0 { parts.append("\(other) other") }
+        return parts.isEmpty ? "0" : parts.joined(separator: " · ")
     }
 
     private var selectedEntry: FolderEntry? {
@@ -329,7 +402,18 @@ private struct FileSidebarRow: View {
                     .font(.body.weight(isActiveDocument ? .semibold : .regular))
                 if entry.kind != .directory {
                     HStack(spacing: 4) {
+                        switch entry.kind {
+                        case .package:
+                            Text("ZIP package")
+                        case .other:
+                            Text(entry.url.pathExtension.isEmpty ? "file" : entry.url.pathExtension.uppercased())
+                        case .markdown:
+                            EmptyView()
+                        case .directory:
+                            EmptyView()
+                        }
                         if !entry.modifiedLabel.isEmpty {
+                            if entry.kind == .package || entry.kind == .other { Text("·") }
                             Text(entry.modifiedLabel)
                         }
                         if !entry.sizeLabel.isEmpty {
@@ -348,6 +432,10 @@ private struct FileSidebarRow: View {
                 Image(systemName: "chevron.forward")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.quaternary)
+            } else if entry.kind == .package {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.quaternary)
             } else if isActiveDocument {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
@@ -357,6 +445,13 @@ private struct FileSidebarRow: View {
         }
         .padding(.vertical, 2)
         .accessibilityLabel(entry.name)
-        .accessibilityValue(isActiveDocument ? "Current document" : entry.kind == .directory ? "Folder" : "Markdown")
+        .accessibilityValue({
+            switch entry.kind {
+            case .directory: return "Folder"
+            case .package: return "Zip package"
+            case .markdown: return isActiveDocument ? "Current document" : "Markdown"
+            case .other: return "File"
+            }
+        }())
     }
 }

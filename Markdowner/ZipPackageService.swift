@@ -9,9 +9,15 @@ struct PackageSession: Identifiable, Hashable, Sendable {
     let packageURL: URL
     /// Expanded tree on disk (temp/cache). Treated as the sidebar root.
     let extractRoot: URL
+    /// Short name without extension (e.g. `sample-curriculum-package`).
     let displayName: String
+    /// Full archive filename including extension (e.g. `sample-curriculum-package.zip`).
+    let archiveFileName: String
 
     var isReadOnly: Bool { true }
+
+    /// Prefer this in chrome so users always see it is a zip package.
+    var sidebarRootLabel: String { archiveFileName }
 }
 
 /// Opens zip archives into a cache directory so the existing folder browser / links / images work.
@@ -49,12 +55,15 @@ enum ZipPackageService {
             // Non-scoped open (e.g. already accessible path) — still OK.
         }
 
-        let name = standardized.deletingPathExtension().lastPathComponent
+        // Keep the real archive filename including ".zip" for UI (sidebar, banner).
+        let archiveName = standardized.lastPathComponent
+        let baseName = standardized.deletingPathExtension().lastPathComponent
         return PackageSession(
             id: id,
             packageURL: standardized,
             extractRoot: root,
-            displayName: name.isEmpty ? standardized.lastPathComponent : name
+            displayName: baseName.isEmpty ? archiveName : baseName,
+            archiveFileName: archiveName.isEmpty ? "\(baseName).zip" : archiveName
         )
     }
 
