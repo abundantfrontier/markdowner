@@ -7,10 +7,12 @@ struct MarkdownerApp: App {
 
     var body: some Scene {
         // WindowGroup allows any number of independent workspaces.
-        WindowGroup(id: "workspace") {
+        WindowGroup(id: WorkspaceWindowBridge.workspaceWindowID) {
             EditorContainerView()
         }
         .defaultSize(width: 1100, height: 720)
+        // Do NOT use handlesExternalEvents for markdowner:// — SwiftUI would open a window
+        // and AppDelegate would open a second one. URL handling is only in AppDelegate/bridge.
         .commands {
             fileCommands
             windowCommands
@@ -261,16 +263,11 @@ struct MarkdownerApp: App {
     }
 }
 
-/// Menu items that open another workspace window (multi-window).
+/// Extra File-menu items (SwiftUI). **New Window** is installed as a real AppKit
+/// `NSMenuItem` in `AppDelegate` so ClingBar’s AX “File → New Window” path works
+/// without activating the app first.
 private struct NewWindowCommandButton: View {
-    @Environment(\.openWindow) private var openWindow
-
     var body: some View {
-        Button("New Window") {
-            openWindow(id: "workspace")
-        }
-        .keyboardShortcut("n", modifiers: [.command, .shift])
-
         Button("Open Current Document in New Window") {
             NotificationCenter.default.post(name: .markdownerDuplicateDocumentWindow, object: nil)
         }
@@ -278,39 +275,178 @@ private struct NewWindowCommandButton: View {
     }
 }
 
-// MARK: - App delegate (Finder open + no untitled document panel)
+// MARK: - App delegate (Finder open + Dock reopen + URL scheme)
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Marker so we can rebind SwiftUI-generated “New Window” items after menu rebuilds.
+    private static let newWindowMarker = "markdowner.newWindow"
+    private var windowRestorableObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ensure we never present the legacy NSDocument open panel on launch.
         NSDocumentController.shared.closeAllDocuments(withDelegate: nil, didCloseAllSelector: nil, contextInfo: nil)
+        // Prevent macOS from restoring a stack of old workspace windows (looks like “double open”).
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
+        NSWindow.allowsAutomaticWindowTabbing = false
+
+        windowRestorableObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            (note.object as? NSWindow)?.isRestorable = false
+        }
+        NSApp.windows.forEach { $0.isRestorable = false }
+
         // Log identity so Console/debug sessions can confirm which binary is running.
         NSLog("%@", BuildInfo.summary)
+
+        // Install AppKit File → New Window (AX-visible, works when app is not frontmost).
+        installOrRebindNewWindowMenuItem()
+        // SwiftUI rebuilds the menu asynchronously — rebind a few times.
+        for delay in [0.3, 1.0, 2.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.installOrRebindNewWindowMenuItem()
+            }
+        }
+
+        // Collapse restored duplicates after SwiftUI finishes restoring scenes.
+        for delay in [0.15, 0.5, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                Self.collapseRestoredWorkspaceWindowsIfNeeded()
+            }
+        }
     }
 
-    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        // We use a WindowGroup workspace, not DocumentGroup.
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if let windowRestorableObserver {
+            NotificationCenter.default.removeObserver(windowRestorableObserver)
+        }
+    }
+
+    /// If state restoration left several workspace windows, keep the key/main one only.
+    @MainActor
+    private static func collapseRestoredWorkspaceWindowsIfNeeded() {
+        let workspaces = NSApp.windows.filter { window in
+            guard window.level == .normal, window.isVisible || window.isMiniaturized else { return false }
+            let s = window.frame.size
+            return s.width >= 600 && s.height >= 400
+        }
+        guard workspaces.count > 1 else { return }
+        let keep = workspaces.first(where: \.isKeyWindow)
+            ?? workspaces.first(where: \.isMainWindow)
+            ?? workspaces.first
+        guard let keep else { return }
+        NSLog("Markdowner: collapsing %d restored windows → keep 1", workspaces.count)
+        for window in workspaces where window !== keep {
+            window.isRestorable = false
+            window.close()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        installOrRebindNewWindowMenuItem()
+        // Do not open a window on every activation — races with markdowner://new-window.
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        // We use a WindowGroup workspace, not DocumentGroup — create windows explicitly.
+        false
+    }
+
+    /// Dock click / second activation when there may be no window on the active Space.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            if let window = NSApp.windows.first(where: { $0.isVisible == false || true }) {
-                // Open workspace window via SwiftUI environment if needed
+        Task { @MainActor in
+            if !flag || !WorkspaceWindowBridge.hasUsableWorkspaceWindow() {
+                NSLog("Markdowner: reopen — opening workspace window (hasVisibleWindows=%@)", flag ? "true" : "false")
+                // Dock expects the app to come forward.
+                WorkspaceWindowBridge.openNewWorkspaceWindow(activate: true)
             }
-            // Returning true lets the system recreate our Window scene when dock-clicked with no windows.
-            return true
         }
         return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        // Deliver to the active workspace after a beat so the window exists.
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .markdownerOpenFileURL, object: url)
+        Task { @MainActor in
+            // Prefer a single new-window URL even if the system delivers duplicates.
+            var handledNewWindow = false
+            for url in urls {
+                if url.scheme?.lowercased() == "markdowner" {
+                    if !handledNewWindow, WorkspaceWindowBridge.handleURL(url) {
+                        handledNewWindow = true
+                    }
+                    continue
+                }
+                if !WorkspaceWindowBridge.hasUsableWorkspaceWindow() {
+                    WorkspaceWindowBridge.openNewWorkspaceWindow(activate: false)
+                }
+                NotificationCenter.default.post(name: .markdownerOpenFileURL, object: url)
+            }
         }
     }
+
+    /// AppKit menu / AX target — **do not activate** (ClingBar stay-on-Space).
+    @objc func markdownerNewWindow(_ sender: Any?) {
+        Task { @MainActor in
+            NSLog("Markdowner: New Window (menu/AX)")
+            WorkspaceWindowBridge.openNewWorkspaceWindow(activate: false)
+        }
+    }
+
+    /// Ensure File → **New Window** exists as a real `NSMenuItem` with this object as target.
+    /// ClingBar presses this via Accessibility without bringing Markdowner front first.
+    private func installOrRebindNewWindowMenuItem() {
+        guard let mainMenu = NSApp.mainMenu else { return }
+
+        for top in mainMenu.items {
+            guard let submenu = top.submenu else { continue }
+            let menuTitle = top.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            // English "File"; also match empty localized edge cases via known first items.
+            let isFileMenu = menuTitle == "File"
+                || submenu.items.contains { $0.title == "New" || $0.title == "Open…" || $0.title.hasPrefix("Open") }
+            guard isFileMenu else { continue }
+
+            // Prefer rebinding an existing "New Window" (SwiftUI Commands may have created it).
+            if let existing = submenu.items.first(where: { $0.title == "New Window" }) {
+                existing.target = self
+                existing.action = #selector(markdownerNewWindow(_:))
+                existing.keyEquivalent = "n"
+                existing.keyEquivalentModifierMask = [.command, .shift]
+                existing.representedObject = Self.newWindowMarker
+                existing.isEnabled = true
+                return
+            }
+
+            let item = NSMenuItem(
+                title: "New Window",
+                action: #selector(markdownerNewWindow(_:)),
+                keyEquivalent: "n"
+            )
+            item.keyEquivalentModifierMask = [.command, .shift]
+            item.target = self
+            item.representedObject = Self.newWindowMarker
+            item.isEnabled = true
+
+            // Place after "New" if present, otherwise near the top of File.
+            var insertAt = 0
+            for (index, mi) in submenu.items.enumerated() {
+                if mi.title == "New" {
+                    insertAt = index + 1
+                    break
+                }
+            }
+            if insertAt < submenu.numberOfItems, submenu.items[insertAt].isSeparatorItem {
+                insertAt += 1
+            }
+            submenu.insertItem(item, at: min(insertAt, submenu.numberOfItems))
+            return
+        }
+    }
+
 }
 
 extension Notification.Name {
@@ -331,6 +467,8 @@ extension Notification.Name {
     static let markdownerOpenFileURL = Notification.Name("markdowner.openFileURL")
     static let markdownerOpenFileURLInNewWindow = Notification.Name("markdowner.openFileURLInNewWindow")
     static let markdownerDuplicateDocumentWindow = Notification.Name("markdowner.duplicateDocumentWindow")
+    /// Request a new `WindowGroup(id: "workspace")` from AppDelegate / URL / non-key context.
+    static let markdownerOpenNewWindow = Notification.Name("markdowner.openNewWindow")
     static let markdownerNavigateDirectory = Notification.Name("markdowner.navigateDirectory")
     static let markdownerNavigateAnchor = Notification.Name("markdowner.navigateAnchor")
     static let markdownerFindInEditor = Notification.Name("markdowner.findInEditor")

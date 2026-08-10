@@ -21,6 +21,7 @@
 		B666FDCBD81445B7B7B632FC /* MarkdownRichText.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEBFEAA260B74686ADF1B63F /* MarkdownRichText.swift */; };
 		B1D0F01A0000000000000001 /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D0F01A0000000000000002 /* BuildInfo.swift */; };
 		B1D0F01A0000000000000010 /* ZipPackageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D0F01A0000000000000011 /* ZipPackageService.swift */; };
+		B1D0F01A0000000000000020 /* WorkspaceWindowBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D0F01A0000000000000021 /* WorkspaceWindowBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +43,7 @@
 		EEBFEAA260B74686ADF1B63F /* MarkdownRichText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownRichText.swift; sourceTree = "<group>"; };
 		B1D0F01A0000000000000002 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 		B1D0F01A0000000000000011 /* ZipPackageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZipPackageService.swift; sourceTree = "<group>"; };
+		B1D0F01A0000000000000021 /* WorkspaceWindowBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -88,6 +90,7 @@
 				B89F1355195141EAAE11958F /* FindReplaceBar.swift */,
 				C6FF939DBC7D4EC8968D2D16 /* ExportService.swift */,
 				B1D0F01A0000000000000011 /* ZipPackageService.swift */,
+				B1D0F01A0000000000000021 /* WorkspaceWindowBridge.swift */,
 				520949B3DE7E419789973245 /* Assets.xcassets */,
 				11B6EFCAE2A54B5C969BC166 /* Info.plist */,
 				451DFBB547F34EB9AF2FA178 /* Markdowner.entitlements */,
@@ -198,6 +201,7 @@
 				A2C75FD6F5FF4BBE84579DE6 /* ExportService.swift in Sources */,
 				B1D0F01A0000000000000001 /* BuildInfo.swift in Sources */,
 				B1D0F01A0000000000000010 /* ZipPackageService.swift in Sources */,
+				B1D0F01A0000000000000020 /* WorkspaceWindowBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -252,7 +256,7 @@
 				CODE_SIGN_ENTITLEMENTS = Markdowner/Markdowner.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Markdowner/Info.plist;
@@ -261,7 +265,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.markdowner.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -277,7 +281,7 @@
 				CODE_SIGN_ENTITLEMENTS = Markdowner/Markdowner.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Markdowner/Info.plist;
@@ -286,7 +290,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.markdowner.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

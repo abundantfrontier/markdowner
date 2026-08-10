@@ -113,6 +113,8 @@ struct EditorContainerView: View {
             }
         }
         .onOpenURL { url in
+            // new-window is handled only in AppDelegate to avoid a second openWindow.
+            if url.scheme?.lowercased() == "markdowner" { return }
             workspace.openFile(at: url)
         }
     }
@@ -492,26 +494,104 @@ private struct WorkspaceCommandHandlers: ViewModifier {
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {
+        registerWindowBridge(
+            windowCommands(
+                fileAndNavCommands(
+                    editCommands(content)
+                )
+            )
+        )
+    }
+
+    private func registerWindowBridge<V: View>(_ content: V) -> some View {
         content
             .onAppear {
+                WorkspaceWindowBridge.openWindowAction = openWindow
                 if let pending = PendingWindowOpen.fileURL {
                     PendingWindowOpen.fileURL = nil
                     columnVisibility = .all
                     workspace.openFile(at: pending)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenNewWindow)) { note in
+                let token = note.userInfo?["token"] as? UInt64
+                let activate = note.userInfo?["activate"] as? Bool ?? false
+                WorkspaceWindowBridge.fulfillFromEnvironment(openWindow, token: token, activate: activate)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenFileURLInNewWindow)) { note in
-                guard isKeyWindow else { return }
                 guard let url = note.object as? URL else { return }
                 PendingWindowOpen.fileURL = url
-                openWindow(id: "workspace")
+                WorkspaceWindowBridge.openWindowAction = openWindow
+                openWindow(id: WorkspaceWindowBridge.workspaceWindowID)
             }
             .onReceive(NotificationCenter.default.publisher(for: .markdownerDuplicateDocumentWindow)) { _ in
-                guard isKeyWindow else { return }
-                guard let url = workspace.fileURL else { return }
+                guard isKeyWindow, let url = workspace.fileURL else { return }
                 PendingWindowOpen.fileURL = url
-                openWindow(id: "workspace")
+                WorkspaceWindowBridge.openWindowAction = openWindow
+                openWindow(id: WorkspaceWindowBridge.workspaceWindowID)
             }
+    }
+
+    private func windowCommands<V: View>(_ content: V) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenFolder)) { _ in
+                guard isKeyWindow else { return }
+                columnVisibility = .all
+                browser.pickFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenPackage)) { _ in
+                guard isKeyWindow else { return }
+                columnVisibility = .all
+                browser.pickPackage()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerExtractPackage)) { _ in
+                guard isKeyWindow else { return }
+                browser.extractActivePackage()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerToggleSidebar)) { _ in
+                guard isKeyWindow else { return }
+                withAnimation(.snappy) {
+                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                }
+            }
+    }
+
+    private func fileAndNavCommands<V: View>(_ content: V) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerNewDocument)) { _ in
+                guard isKeyWindow else { return }
+                workspace.newDocument()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenDocument)) { _ in
+                guard isKeyWindow else { return }
+                workspace.openPanel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerSaveDocument)) { _ in
+                guard isKeyWindow else { return }
+                workspace.save()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerSaveDocumentAs)) { _ in
+                guard isKeyWindow else { return }
+                workspace.saveAs()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenFileURL)) { note in
+                guard isKeyWindow else { return }
+                if let url = note.object as? URL {
+                    columnVisibility = .all
+                    workspace.openFile(at: url)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .markdownerNavigateDirectory)) { note in
+                guard isKeyWindow else { return }
+                if let url = note.object as? URL {
+                    columnVisibility = .all
+                    browser.navigateToDirectory(url)
+                }
+            }
+    }
+
+    private func editCommands<V: View>(_ content: V) -> some View {
+        content
             .onReceive(NotificationCenter.default.publisher(for: .markdownerShowFind)) { note in
                 guard isKeyWindow else { return }
                 showFind = true
@@ -538,58 +618,6 @@ private struct WorkspaceCommandHandlers: ViewModifier {
                 case "mode-split", "split": viewMode = .split
                 case "image": onInsertImage()
                 default: break
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenFolder)) { _ in
-                guard isKeyWindow else { return }
-                columnVisibility = .all
-                browser.pickFolder()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenPackage)) { _ in
-                guard isKeyWindow else { return }
-                columnVisibility = .all
-                browser.pickPackage()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerExtractPackage)) { _ in
-                guard isKeyWindow else { return }
-                browser.extractActivePackage()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerToggleSidebar)) { _ in
-                guard isKeyWindow else { return }
-                withAnimation(.snappy) {
-                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerNewDocument)) { _ in
-                guard isKeyWindow else { return }
-                workspace.newDocument()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenDocument)) { _ in
-                guard isKeyWindow else { return }
-                workspace.openPanel()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerSaveDocument)) { _ in
-                guard isKeyWindow else { return }
-                workspace.save()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerSaveDocumentAs)) { _ in
-                guard isKeyWindow else { return }
-                workspace.saveAs()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerOpenFileURL)) { note in
-                guard isKeyWindow else { return }
-                if let url = note.object as? URL {
-                    columnVisibility = .all
-                    // Document navigation only — updates back/forward history.
-                    workspace.openFile(at: url)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .markdownerNavigateDirectory)) { note in
-                guard isKeyWindow else { return }
-                if let url = note.object as? URL {
-                    columnVisibility = .all
-                    // Sidebar only — does not change the open document or history.
-                    browser.navigateToDirectory(url)
                 }
             }
     }

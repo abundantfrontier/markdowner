@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.1 (2026-08-09)
+
+### Fixed
+- **ClingBar / multi-Space “new window here”** — single window per request (no doubles)
+- Dock reopen and `markdowner://new-window` no longer race to open two workspaces
+- Disabled aggressive window restoration that reopened stacks of old windows
+- AppKit **File → New Window** (AX-friendly) without force-activating (avoids Space jumps)
+
+### Integration
+- URL scheme: `markdowner://new-window` (for ClingBar and scripts)
+- Debounced / tokenized `WorkspaceWindowBridge` as the sole open-window path
+
 ## 1.1.0 (2026-08-08)
 
 ### Added

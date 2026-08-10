@@ -216,6 +216,14 @@ App is sandboxed (`Markdowner.entitlements`):
 
 Opening a document also scopes that file URL for read/write until replaced.
 
+## Multi-window & external open (ClingBar / Dock)
+
+- **File → New Window** (title exact) / **⇧⌘N** → `WorkspaceWindowBridge.openNewWorkspaceWindow()` → `openWindow(id: "workspace")`
+- `WorkspaceWindowBridge` stores `OpenWindowAction` from any live workspace so AppDelegate can open windows when the app is not key
+- **Dock reopen** (`applicationShouldHandleReopen`): if no usable windows → open a workspace (does not rely on untitled-document)
+- **URL scheme** `markdowner://new-window` (Info.plist `CFBundleURLTypes`) — ClingBar / scripts can open a window on the current Space without AX menu scraping
+- Cold launch / become-active: if zero workspace windows remain, open one
+
 ## Multi-window
 
 - **⌘⇧N** / New Window → another `WindowGroup` instance.
