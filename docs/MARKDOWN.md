@@ -19,8 +19,8 @@ What Markdowner understands, how it round-trips in Write mode, and known limitat
 | Block quote | `> …` | Yes | Yes | Yes |
 | Unordered list | `-` / `*` / `•` | Yes | Yes | Yes |
 | Ordered list | `1. item` | **Preserves numbers** | Yes | Yes |
-| Task list | `- [ ]` / `- [x]` | Yes | Yes | Basic |
-| Fenced code | `` ```lang `` | Yes (mono) | Yes | Yes |
+| Task list | `- [ ]` / `- [x]` | Yes (click box in Write) | Yes | Basic |
+| Fenced code | `` ```lang `` | Yes (mono + light highlight) | Yes | Yes |
 | Horizontal rule | `---` / `***` / visual rule | Yes | Yes | Yes |
 | Tables (GFM) | `\| a \| b \|` | **Displayed**; source **preserved** on save | Yes | Yes |
 | HTML blocks | raw `<div>` etc. | Mostly plain text | Mostly plain | Limited |
@@ -30,7 +30,7 @@ What Markdowner understands, how it round-trips in Write mode, and known limitat
 
 - Ordered lists keep the **number written in the file** (not forced 1…n renumbering on open).
 - List items can have **continuation lines** / loose bodies (blank line then indented paragraphs) under the first line.
-- Nested lists are only partially modeled; deep nesting may flatten or look wrong in Write.
+- Nested lists: 2-space (or tab) indent is shown with extra indent in Write/Preview; deep structure is still easiest to edit in Source.
 
 ### Tables
 
@@ -92,15 +92,32 @@ Right-click a link for Open, Open in New Window, Show in Sidebar, Copy, etc.
 
 ## Images
 
-- Toolbar / **⇧⌘I**, drag-and-drop, or paste from clipboard.
-- Embedded as **`data:image/…;base64,…`** in the Markdown so the file stays self-contained (no sidecar required).
-- Large images grow the `.md` file; for huge media, prefer external files and normal relative paths if you accept the dependency.
+Write mode shows real images (not just source text). Preview and HTML/PDF export resolve the same sources.
 
-Example:
+| Action | Behavior |
+|--------|----------|
+| Toolbar / **⇧⌘I** | Pick a file → prefer copy into `assets/` next to the document; embed data URL if unsaved |
+| Drag image from Finder | Same as insert (copy to `assets/` when possible) |
+| Paste image / screenshot | Write PNG under `assets/` or embed if no document folder |
+| Right-click image (Write) | **Save Image…**, **Copy Image**, **Copy Markdown**, **Reveal in Finder** (file-based) |
+
+Preferred portable form (folder of notes):
+
+```markdown
+![Diagram](assets/diagram.png)
+```
+
+Self-contained single file (embeds; large files bloat `.md`):
 
 ```markdown
 ![Diagram](data:image/png;base64,iVBORw0KGgo...)
 ```
+
+**Tip:** Save the document first so drag/paste can use `assets/` instead of huge data URLs.
+
+### Phase 3 (planned, not built)
+
+- Math (`$…$` / `$$…$$`) and Mermaid diagrams: render in **Preview + export** only; Write/Source keep the source fences.
 
 ## View modes and fidelity
 

@@ -136,6 +136,8 @@ final class WorkspaceModel {
         let standardized = url.standardizedFileURL
         let previousURL = fileURL
         let accessed = standardized.startAccessingSecurityScopedResource()
+        // Re-assert any Open Folder scopes so `assets/` next to this file is readable.
+        SecurityScopedRoots.noteDocumentOpened(standardized)
 
         do {
             let data = try Data(contentsOf: standardized)
@@ -159,8 +161,12 @@ final class WorkspaceModel {
             // Set file URL + link base *before* text so Write-mode attributed links resolve
             // against the correct folder on the first paint (not the previous document's).
             fileURL = standardized
-            LinkHandling.documentDirectory = standardized.deletingLastPathComponent()
+            let parent = standardized.deletingLastPathComponent()
+            LinkHandling.documentDirectory = parent
             LinkHandling.currentDocumentURL = standardized
+            // Keep parent access alive for relative images when the system allows it.
+            SecurityScopedRoots.register(parent)
+            SecurityScopedRoots.accessForReading(parent)
             text = string
             isDirty = false
             isLoading = false

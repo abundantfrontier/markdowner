@@ -434,19 +434,18 @@ struct EditorContainerView: View {
         if let heic = UTType(filenameExtension: "heic") { types.append(heic) }
         panel.allowedContentTypes = types
         panel.allowsMultipleSelection = false
+        panel.message = "Images are copied into assets/ next to the document when possible"
         panel.begin { response in
-            guard response == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
-            let ext = url.pathExtension.lowercased()
-            let mime: String
-            switch ext {
-            case "jpg", "jpeg": mime = "image/jpeg"
-            case "gif": mime = "image/gif"
-            case "webp": mime = "image/webp"
-            default: mime = "image/png"
+            guard response == .OK, let url = panel.url else { return }
+            // Prefer relative assets/ when the doc has a folder; else embed.
+            let mode: MarkdownImage.InsertMode =
+                (LinkHandling.documentDirectory != nil || workspace.fileURL != nil)
+                ? .copyToAssets : .embedDataURL
+            if workspace.fileURL != nil {
+                LinkHandling.currentDocumentURL = workspace.fileURL
+                LinkHandling.documentDirectory = workspace.fileURL?.deletingLastPathComponent()
             }
-            let b64 = data.base64EncodedString()
-            let alt = url.deletingPathExtension().lastPathComponent
-            let snippet = "\n\n![\(alt)](data:\(mime);base64,\(b64))\n\n"
+            guard let snippet = MarkdownImage.markdownSnippet(forFileURL: url, mode: mode) else { return }
             DispatchQueue.main.async {
                 workspace.updateText(workspace.text + snippet)
             }

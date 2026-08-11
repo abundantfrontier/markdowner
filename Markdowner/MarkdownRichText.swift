@@ -5,6 +5,8 @@ enum MarkdownRichText {
     /// When present, this substring should be written back as this exact Markdown
     /// (used for tables so visual layout can differ from source).
     static let preservedMarkdownKey = NSAttributedString.Key("com.markdowner.preservedMarkdown")
+    /// Bool on the checkbox glyph of a task-list line (`☑` / `☐`).
+    static let taskCheckboxKey = NSAttributedString.Key("com.markdowner.taskCheckbox")
 
     // MARK: - Markdown → rich text
 
@@ -87,21 +89,21 @@ enum MarkdownRichText {
                 }
                 let ps = paragraphStyle(before: 2, after: 2, lineSpacing: 3)
                 ps.headIndent = 22
+                ps.tabStops = [NSTextTab(textAlignment: .left, location: 22, options: [:])]
                 attrs[.paragraphStyle] = ps
                 let box = item.checked ? "☑\t" : "☐\t"
                 let line = NSMutableAttributedString(string: box, attributes: attrs)
+                // Mark checkbox glyph so Write mode can toggle on click.
+                let boxRange = NSRange(location: 0, length: 1)
+                line.addAttribute(taskCheckboxKey, value: item.checked, range: boxRange)
+                line.addAttribute(.cursor, value: NSCursor.pointingHand, range: boxRange)
                 line.append(inlineAttributed(item.text, base: attrs))
                 out.append(line)
             }
             return out
 
-        case .codeBlock(_, let code):
-            var attrs = baseAttributes(size: 13.5)
-            attrs[.font] = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
-            attrs[.backgroundColor] = NSColor.controlBackgroundColor
-            let ps = paragraphStyle(before: 8, after: 10, lineSpacing: 2)
-            attrs[.paragraphStyle] = ps
-            return NSAttributedString(string: code, attributes: attrs)
+        case .codeBlock(let language, let code):
+            return attributedCodeBlock(code: code, language: language, baseSize: baseSize)
 
         case .horizontalRule:
             var attrs = baseAttributes(size: baseSize)
@@ -115,6 +117,7 @@ enum MarkdownRichText {
     }
 
     /// List item may contain title + body paragraphs separated by blank lines.
+    /// `body` may start with `"\t\t…"` depth markers from the block parser (two spaces = one level).
     private static func attributedLooseList(
         items: [(marker: String, body: String)],
         baseSize: CGFloat,
@@ -125,18 +128,22 @@ enum MarkdownRichText {
             if index > 0 {
                 out.append(NSAttributedString(string: "\n"))
             }
-            let parts = item.body
+            let depth = listDepth(from: item.body)
+            let bodyText = stripListDepthPrefix(item.body)
+            let indent = CGFloat(depth) * 22
+
+            let parts = bodyText
                 .components(separatedBy: "\n\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-            let title = parts.first ?? item.body
+            let title = parts.first ?? bodyText
             let bodyParas = Array(parts.dropFirst())
 
             var titleAttrs = baseAttributes(size: baseSize, weight: .semibold)
             let titlePS = paragraphStyle(before: index == 0 ? 4 : 10, after: bodyParas.isEmpty ? 8 : 4, lineSpacing: 3)
-            titlePS.headIndent = markerWidthHint
-            titlePS.firstLineHeadIndent = 0
-            titlePS.tabStops = [NSTextTab(textAlignment: .left, location: markerWidthHint, options: [:])]
+            titlePS.headIndent = markerWidthHint + indent
+            titlePS.firstLineHeadIndent = indent
+            titlePS.tabStops = [NSTextTab(textAlignment: .left, location: markerWidthHint + indent, options: [:])]
             titleAttrs[.paragraphStyle] = titlePS
 
             let titleLine = NSMutableAttributedString(string: "\(item.marker)\t", attributes: titleAttrs)
@@ -153,8 +160,8 @@ enum MarkdownRichText {
                     after: bi == bodyParas.count - 1 ? 10 : 6,
                     lineSpacing: 4
                 )
-                bodyPS.headIndent = markerWidthHint + 10
-                bodyPS.firstLineHeadIndent = markerWidthHint + 10
+                bodyPS.headIndent = markerWidthHint + 10 + indent
+                bodyPS.firstLineHeadIndent = markerWidthHint + 10 + indent
                 bodyAttrs[.paragraphStyle] = bodyPS
                 let bodyLine = NSMutableAttributedString(attributedString: inlineAttributed(para, base: bodyAttrs))
                 if !bodyLine.string.hasSuffix("\n") {
@@ -164,6 +171,101 @@ enum MarkdownRichText {
             }
         }
         return out
+    }
+
+    /// Depth encoded as leading `"›"` characters from the parser (one per indent level).
+    private static func listDepth(from body: String) -> Int {
+        var d = 0
+        for ch in body {
+            if ch == "›" { d += 1 } else { break }
+        }
+        return d
+    }
+
+    private static func stripListDepthPrefix(_ body: String) -> String {
+        var s = body
+        while s.hasPrefix("›") { s = String(s.dropFirst()) }
+        return s
+    }
+
+    private static func attributedCodeBlock(code: String, language: String?, baseSize: CGFloat) -> NSAttributedString {
+        let font = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
+        var base: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+            .backgroundColor: NSColor.controlBackgroundColor,
+            .paragraphStyle: paragraphStyle(before: 8, after: 10, lineSpacing: 2),
+        ]
+        let out = NSMutableAttributedString(string: code, attributes: base)
+        // Light syntax coloring (keywords / strings / comments) — best-effort, not a full highlighter.
+        applyLightSyntaxHighlight(to: out, language: language)
+        // Preserve original fenced block for round-trip when language or content is fragile.
+        let lang = language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fence = "```\(lang)\n\(code)\n```"
+        if out.length > 0 {
+            out.addAttribute(preservedMarkdownKey, value: fence, range: NSRange(location: 0, length: out.length))
+        }
+        return out
+    }
+
+    private static func applyLightSyntaxHighlight(to storage: NSMutableAttributedString, language: String?) {
+        let full = storage.string as NSString
+        guard full.length > 0 else { return }
+        let whole = NSRange(location: 0, length: full.length)
+        let lang = (language ?? "").lowercased()
+
+        let keywordSets: [String: [String]] = [
+            "swift": ["func", "var", "let", "if", "else", "guard", "return", "import", "struct", "class", "enum", "protocol", "extension", "true", "false", "nil", "self", "async", "await", "throws", "try", "switch", "case", "for", "while", "in", "where", "some", "any"],
+            "js": ["function", "const", "let", "var", "if", "else", "return", "import", "export", "class", "true", "false", "null", "async", "await", "for", "while", "of", "in", "new", "typeof"],
+            "javascript": [],
+            "ts": [],
+            "typescript": [],
+            "python": ["def", "class", "if", "elif", "else", "return", "import", "from", "as", "True", "False", "None", "for", "while", "in", "with", "try", "except", "async", "await", "yield", "lambda"],
+            "py": [],
+            "json": ["true", "false", "null"],
+            "bash": ["if", "then", "else", "fi", "for", "do", "done", "in", "echo", "export", "return"],
+            "sh": [],
+        ]
+        var keywords = keywordSets[lang] ?? []
+        if keywords.isEmpty {
+            // Generic fallback
+            keywords = keywordSets["swift"]! + keywordSets["python"]! + keywordSets["js"]!
+        }
+        if lang == "javascript" || lang == "js" || lang == "ts" || lang == "typescript" {
+            keywords = keywordSets["js"]!
+        }
+        if lang == "py" || lang == "python" {
+            keywords = keywordSets["python"]!
+        }
+        if lang == "sh" || lang == "bash" || lang == "zsh" {
+            keywords = keywordSets["bash"]!
+        }
+
+        let keywordColor = NSColor.systemPurple
+        let stringColor = NSColor.systemRed.withAlphaComponent(0.9)
+        let commentColor = NSColor.secondaryLabelColor
+
+        for word in Set(keywords) {
+            guard let re = try? NSRegularExpression(pattern: "\\b\(NSRegularExpression.escapedPattern(for: word))\\b") else { continue }
+            re.enumerateMatches(in: storage.string, options: [], range: whole) { match, _, _ in
+                guard let match else { return }
+                storage.addAttribute(.foregroundColor, value: keywordColor, range: match.range)
+            }
+        }
+        // Strings
+        if let re = try? NSRegularExpression(pattern: #"("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#) {
+            re.enumerateMatches(in: storage.string, options: [], range: whole) { match, _, _ in
+                guard let match else { return }
+                storage.addAttribute(.foregroundColor, value: stringColor, range: match.range)
+            }
+        }
+        // Line comments // and #
+        if let re = try? NSRegularExpression(pattern: #"(//.*$|#(?!\!).*$)"#, options: [.anchorsMatchLines]) {
+            re.enumerateMatches(in: storage.string, options: [], range: whole) { match, _, _ in
+                guard let match else { return }
+                storage.addAttribute(.foregroundColor, value: commentColor, range: match.range)
+            }
+        }
     }
 
     /// Real AppKit text table (not raw pipe characters).
@@ -269,25 +371,39 @@ enum MarkdownRichText {
     }
 
     private static func inlineAttributed(_ markdown: String, base: [NSAttributedString.Key: Any]) -> NSAttributedString {
-        let styled = MarkdownInline.attributed(markdown)
-        let result = NSMutableAttributedString(attributedString: NSAttributedString(styled))
-        // Apply base font/paragraph where not already specialized
-        result.enumerateAttributes(in: NSRange(location: 0, length: result.length)) { attrs, range, _ in
-            var merged = base
-            for (k, v) in attrs {
-                // Map SwiftUI-ish keys already applied via NSAttributedString bridge
-                merged[k] = v
+        // Split on images so Write mode can show real NSTextAttachments.
+        let segments = MarkdownInlineSegments.parse(markdown)
+        if segments.isEmpty {
+            return NSAttributedString(string: "", attributes: base)
+        }
+
+        let result = NSMutableAttributedString()
+        for segment in segments {
+            switch segment {
+            case .image(let alt, let src):
+                result.append(MarkdownImage.attachmentString(alt: alt, src: src, base: base))
+            case .text(let piece):
+                guard !piece.isEmpty else { continue }
+                let styled = MarkdownInline.attributed(piece)
+                let chunk = NSMutableAttributedString(attributedString: NSAttributedString(styled))
+                chunk.enumerateAttributes(in: NSRange(location: 0, length: chunk.length)) { attrs, range, _ in
+                    var merged = base
+                    for (k, v) in attrs {
+                        merged[k] = v
+                    }
+                    if merged[.font] == nil, let baseFont = base[.font] {
+                        merged[.font] = baseFont
+                    }
+                    if merged[.foregroundColor] == nil, let c = base[.foregroundColor] {
+                        merged[.foregroundColor] = c
+                    }
+                    if merged[.paragraphStyle] == nil, let p = base[.paragraphStyle] {
+                        merged[.paragraphStyle] = p
+                    }
+                    chunk.setAttributes(merged, range: range)
+                }
+                result.append(chunk)
             }
-            if merged[.font] == nil, let baseFont = base[.font] {
-                merged[.font] = baseFont
-            }
-            if merged[.foregroundColor] == nil, let c = base[.foregroundColor] {
-                merged[.foregroundColor] = c
-            }
-            if merged[.paragraphStyle] == nil, let p = base[.paragraphStyle] {
-                merged[.paragraphStyle] = p
-            }
-            result.setAttributes(merged, range: range)
         }
         if result.length == 0 {
             return NSAttributedString(string: markdown, attributes: base)
@@ -456,13 +572,29 @@ enum MarkdownRichText {
         if attr.length == 0 { return "" }
         var out = ""
         attr.enumerateAttributes(in: NSRange(location: 0, length: attr.length)) { attrs, range, _ in
+            // Exact preserved image / table fragment
+            if let preserved = attrs[preservedMarkdownKey] as? String, !preserved.isEmpty {
+                // Only emit once for image/table runs that carry full markdown
+                if preserved.hasPrefix("![") || preserved.hasPrefix("|") {
+                    out += preserved
+                    return
+                }
+            }
+            if attrs[.attachment] != nil {
+                let src = attrs[MarkdownImage.srcKey] as? String ?? ""
+                let alt = attrs[MarkdownImage.altKey] as? String ?? ""
+                if let preserved = attrs[preservedMarkdownKey] as? String, preserved.hasPrefix("![") {
+                    out += preserved
+                } else if !src.isEmpty {
+                    out += MarkdownImage.markdown(alt: alt, src: src)
+                }
+                return
+            }
+
             var chunk = (attr.string as NSString).substring(with: range)
             if chunk.isEmpty { return }
 
             let font = attrs[.font] as? NSFont
-            let traits = font?.fontDescriptor.symbolicTraits ?? []
-            let isBold = traits.contains(.bold) || (font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false)
-            // NSFontDescriptor.SymbolicTraits
             let symbolic = font?.fontDescriptor.symbolicTraits ?? []
             let bold = symbolic.contains(.bold) || isBoldTrait(font)
             let italic = symbolic.contains(.italic) || isItalicTrait(font)
@@ -492,7 +624,6 @@ enum MarkdownRichText {
                     urlString = ""
                 }
                 if !urlString.isEmpty {
-                    // Avoid double-wrapping if already linked text is plain
                     chunk = "[\(chunk)](\(urlString))"
                 }
             }

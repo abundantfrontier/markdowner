@@ -480,13 +480,34 @@ private final class FlippedDocumentView: NSView {
 
 // MARK: - Editable rich Write mode
 
-/// `NSTextView` that follows Markdown links with a plain click (or ⌘-click).
-/// Default AppKit only activates links on ⌘-click while editable, which feels broken for a document app.
+/// `NSTextView` that follows Markdown links with a plain click (or ⌘-click),
+/// toggles task checkboxes, and accepts image drag-and-drop.
 private final class LinkAwareTextView: NSTextView {
+    var onImagesDropped: (([URL]) -> Void)?
+    var onImagePaste: ((NSImage) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL, .tiff, .png])
+    }
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        registerForDraggedTypes([.fileURL, .tiff, .png])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL, .tiff, .png])
+    }
+
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 1, let hit = linkHit(at: event) {
-            // Plain click or ⌘-click on a link → open. Shift-click still selects through the link.
-            if !event.modifierFlags.contains(.shift) {
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift) {
+            if let charIndex = characterIndex(at: event),
+               toggleTaskCheckbox(at: charIndex) {
+                return
+            }
+            if let hit = linkHit(at: event) {
                 if let del = delegate as? any NSTextViewDelegate {
                     let handled = del.textView?(self, clickedOnLink: hit.link, at: hit.charIndex) ?? false
                     if handled { return }
@@ -504,16 +525,125 @@ private final class LinkAwareTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
-    private func linkHit(at event: NSEvent) -> (link: Any, charIndex: Int)? {
-        guard let storage = textStorage, let lm = layoutManager, let tc = textContainer else { return nil }
+    override func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage], let img = imgs.first {
+            onImagePaste?(img)
+            return
+        }
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL], urls.contains(where: { isImageFile($0) }) {
+            onImagesDropped?(urls.filter { isImageFile($0) })
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL] {
+            let images = urls.filter { isImageFile($0) }
+            if !images.isEmpty {
+                onImagesDropped?(images)
+                return true
+            }
+        }
+        if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage], let img = imgs.first {
+            onImagePaste?(img)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        if hasImagePayload(sender.draggingPasteboard) { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        if hasImagePayload(sender.draggingPasteboard) { return true }
+        return super.prepareForDragOperation(sender)
+    }
+
+    private func hasImagePayload(_ pb: NSPasteboard) -> Bool {
+        if pb.canReadObject(forClasses: [NSImage.self], options: nil) { return true }
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
+            return urls.contains(where: isImageFile)
+        }
+        return false
+    }
+
+    private func isImageFile(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic"].contains(ext)
+    }
+
+    /// Toggle `- [ ]` / `- [x]` when the user clicks ☑ / ☐.
+    @discardableResult
+    private func toggleTaskCheckbox(at charIndex: Int) -> Bool {
+        guard isEditable, let storage = textStorage else { return false }
+        guard charIndex >= 0, charIndex < storage.length else { return false }
+        guard storage.attribute(MarkdownRichText.taskCheckboxKey, at: charIndex, effectiveRange: nil) != nil else {
+            return false
+        }
+        let ch = (storage.string as NSString).character(at: charIndex)
+        let checked = ch == 0x2611 // ☑
+        let unchecked = ch == 0x2610 // ☐
+        guard checked || unchecked else { return false }
+        let newChar = checked ? "☐" : "☑"
+        let range = NSRange(location: charIndex, length: 1)
+        if shouldChangeText(in: range, replacementString: newChar) {
+            storage.replaceCharacters(in: range, with: newChar)
+            storage.addAttribute(
+                MarkdownRichText.taskCheckboxKey,
+                value: !checked,
+                range: range
+            )
+            // Restyle rest of line
+            var lineStart = 0, lineEnd = 0, contentsEnd = 0
+            (storage.string as NSString).getLineStart(
+                &lineStart, end: &lineEnd, contentsEnd: &contentsEnd,
+                for: NSRange(location: charIndex, length: 0)
+            )
+            let bodyStart = min(charIndex + 1, contentsEnd)
+            // skip tab after box
+            var rest = bodyStart
+            if rest < contentsEnd, (storage.string as NSString).character(at: rest) == 9 {
+                rest += 1
+            }
+            let bodyRange = NSRange(location: rest, length: max(0, contentsEnd - rest))
+            if bodyRange.length > 0 {
+                if checked {
+                    // was checked → now unchecked: remove strike/secondary
+                    storage.removeAttribute(.strikethroughStyle, range: bodyRange)
+                    storage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: bodyRange)
+                } else {
+                    storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: bodyRange)
+                    storage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: bodyRange)
+                }
+            }
+            didChangeText()
+        }
+        return true
+    }
+
+    private func characterIndex(at event: NSEvent) -> Int? {
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        // Account for textContainerInset
         let inset = textContainerInset
         let adjusted = NSPoint(x: point.x - inset.width, y: point.y - inset.height)
         var fraction: CGFloat = 0
         let glyphIndex = lm.glyphIndex(for: adjusted, in: tc, fractionOfDistanceThroughGlyph: &fraction)
         let charIndex = lm.characterIndexForGlyph(at: glyphIndex)
         guard charIndex < storage.length else { return nil }
+        return charIndex
+    }
+
+    private func linkHit(at event: NSEvent) -> (link: Any, charIndex: Int)? {
+        guard let storage = textStorage, let charIndex = characterIndex(at: event) else { return nil }
         guard let link = storage.attribute(.link, at: charIndex, effectiveRange: nil) else { return nil }
         return (link, charIndex)
     }
@@ -538,12 +668,13 @@ struct RichMarkdownTextView: NSViewRepresentable {
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
 
-        let tv = LinkAwareTextView()
+        let tv = LinkAwareTextView(frame: .zero)
         tv.delegate = context.coordinator
         tv.isRichText = true
         tv.isEditable = !isReadOnly
         tv.isSelectable = true
         tv.allowsUndo = !isReadOnly
+        // We handle image paste/drag ourselves so Markdown stays portable.
         tv.importsGraphics = false
         tv.isAutomaticQuoteSubstitutionEnabled = !isReadOnly
         tv.isAutomaticDashSubstitutionEnabled = !isReadOnly
@@ -570,6 +701,13 @@ struct RichMarkdownTextView: NSViewRepresentable {
             .font: NSFont.systemFont(ofSize: 16.5),
             .foregroundColor: NSColor.labelColor,
         ]
+        let coordinator = context.coordinator
+        tv.onImagesDropped = { [weak coordinator] urls in
+            coordinator?.insertImageFiles(urls)
+        }
+        tv.onImagePaste = { [weak coordinator] image in
+            coordinator?.insertPastedImage(image)
+        }
 
         tv.textStorage?.setAttributedString(MarkdownRichText.attributedString(from: text))
         context.coordinator.lastMarkdown = text
@@ -622,6 +760,12 @@ struct RichMarkdownTextView: NSViewRepresentable {
                 name: .markdownerNavigateAnchor,
                 object: nil
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(folderAccessGranted(_:)),
+                name: .markdownerFolderAccessGranted,
+                object: nil
+            )
         }
 
         deinit { NotificationCenter.default.removeObserver(self) }
@@ -634,6 +778,15 @@ struct RichMarkdownTextView: NSViewRepresentable {
                 toAnchor: fragment,
                 markdownSource: lastMarkdown.isEmpty ? text.wrappedValue : lastMarkdown
             )
+        }
+
+        /// After Open Folder…, re-parse so relative images can load under App Sandbox.
+        @objc func folderAccessGranted(_ note: Notification) {
+            guard let tv = textView else { return }
+            let md = lastMarkdown.isEmpty ? text.wrappedValue : lastMarkdown
+            let selected = tv.selectedRanges
+            tv.textStorage?.setAttributedString(MarkdownRichText.attributedString(from: md))
+            tv.selectedRanges = selected
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -675,6 +828,32 @@ struct RichMarkdownTextView: NSViewRepresentable {
             guard let storage = view.textStorage, charIndex >= 0, charIndex < storage.length else {
                 return menu
             }
+            // Image attachment context menu
+            if storage.attribute(.attachment, at: charIndex, effectiveRange: nil) != nil
+                || storage.attribute(MarkdownImage.srcKey, at: charIndex, effectiveRange: nil) != nil {
+                let src = storage.attribute(MarkdownImage.srcKey, at: charIndex, effectiveRange: nil) as? String ?? ""
+                let alt = storage.attribute(MarkdownImage.altKey, at: charIndex, effectiveRange: nil) as? String ?? ""
+                let imageMenu = NSMenu(title: "Image")
+                let save = NSMenuItem(title: "Save Image…", action: #selector(saveImage(_:)), keyEquivalent: "")
+                save.target = self
+                save.representedObject = src
+                imageMenu.addItem(save)
+                let copy = NSMenuItem(title: "Copy Image", action: #selector(copyImage(_:)), keyEquivalent: "")
+                copy.target = self
+                copy.representedObject = src
+                imageMenu.addItem(copy)
+                let copyMD = NSMenuItem(title: "Copy Markdown", action: #selector(copyImageMarkdown(_:)), keyEquivalent: "")
+                copyMD.target = self
+                copyMD.representedObject = MarkdownImage.markdown(alt: alt, src: src)
+                imageMenu.addItem(copyMD)
+                if let fileURL = MarkdownImage.resolveFileURL(src), !src.hasPrefix("data:") {
+                    let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealImage(_:)), keyEquivalent: "")
+                    reveal.target = self
+                    reveal.representedObject = fileURL
+                    imageMenu.addItem(reveal)
+                }
+                return imageMenu
+            }
             if let link = storage.attribute(.link, at: charIndex, effectiveRange: nil) {
                 let url: URL? = {
                     if let u = link as? URL { return u }
@@ -687,6 +866,106 @@ struct RichMarkdownTextView: NSViewRepresentable {
                 }
             }
             return menu
+        }
+
+        @objc private func saveImage(_ sender: NSMenuItem) {
+            guard let src = sender.representedObject as? String else { return }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.png]
+            panel.nameFieldStringValue = "image.png"
+            if src.hasPrefix("data:"), let mime = MarkdownImage.parseDataURL(src)?.mime {
+                if mime.contains("jpeg") {
+                    panel.allowedContentTypes = [.jpeg]
+                    panel.nameFieldStringValue = "image.jpg"
+                }
+            } else if let url = MarkdownImage.resolveFileURL(src) {
+                panel.nameFieldStringValue = url.lastPathComponent
+            }
+            panel.begin { response in
+                guard response == .OK, let dest = panel.url else { return }
+                if let data = MarkdownImage.originalData(src: src) {
+                    try? data.write(to: dest, options: .atomic)
+                } else if let img = MarkdownImage.loadNSImage(src: src),
+                          let data = MarkdownImage.pngData(from: img) {
+                    try? data.write(to: dest, options: .atomic)
+                }
+            }
+        }
+
+        @objc private func copyImage(_ sender: NSMenuItem) {
+            guard let src = sender.representedObject as? String,
+                  let img = MarkdownImage.loadNSImage(src: src) else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([img])
+        }
+
+        @objc private func copyImageMarkdown(_ sender: NSMenuItem) {
+            guard let md = sender.representedObject as? String else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(md, forType: .string)
+        }
+
+        @objc private func revealImage(_ sender: NSMenuItem) {
+            guard let url = sender.representedObject as? URL else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+
+        func insertImageFiles(_ urls: [URL]) {
+            guard !isReadOnly else { return }
+            var snippets: [String] = []
+            for url in urls {
+                if let s = MarkdownImage.markdownSnippet(forFileURL: url, mode: .copyToAssets) {
+                    snippets.append(s.trimmingCharacters(in: .newlines))
+                }
+            }
+            guard !snippets.isEmpty else {
+                presentImageNeedsSaveAlert()
+                return
+            }
+            insertMarkdownSnippet("\n\n" + snippets.joined(separator: "\n\n") + "\n\n")
+        }
+
+        func insertPastedImage(_ image: NSImage) {
+            guard !isReadOnly else { return }
+            if let s = MarkdownImage.markdownSnippet(forImage: image) {
+                insertMarkdownSnippet(s)
+            } else {
+                presentImageNeedsSaveAlert()
+            }
+        }
+
+        private func insertMarkdownSnippet(_ snippet: String) {
+            // Prefer end of document for drop; paste at selection if available.
+            if let tv = textView, tv.selectedRange().location != NSNotFound,
+               tv.selectedRange().location <= (tv.string as NSString).length {
+                let range = tv.selectedRange()
+                if tv.shouldChangeText(in: range, replacementString: snippet) {
+                    // Insert into markdown binding via string splice for reliable round-trip.
+                    let ns = text.wrappedValue as NSString
+                    // Map rich selection to end of markdown is hard; append is safer after re-parse.
+                    _ = ns
+                }
+            }
+            let next = text.wrappedValue + (text.wrappedValue.hasSuffix("\n") ? "" : "\n") + snippet
+            lastMarkdown = next
+            text.wrappedValue = next
+            contentChanged = true
+            if let tv = textView {
+                tv.textStorage?.setAttributedString(MarkdownRichText.attributedString(from: next))
+            }
+        }
+
+        private func presentImageNeedsSaveAlert() {
+            let alert = NSAlert()
+            alert.messageText = "Save the document first"
+            alert.informativeText = "Images are stored in an assets folder next to your Markdown file. Save the document, then drop or paste the image again.\n\nAlternatively use Insert Image… which can embed small images as data URLs."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+
+        private var isReadOnly: Bool {
+            !(textView?.isEditable ?? true)
         }
 
         private func commitMarkdown() {

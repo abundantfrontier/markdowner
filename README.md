@@ -8,7 +8,7 @@
 
 - **File sidebar** — folders + Markdown; optional filter; live refresh; `.zip` packages listed and openable
 - **True WYSIWYG editing** — headings, bold, italic, lists, quotes, code, links, tables, task lists (`NSTextView`)
-- **Images** — drag & drop, paste, or **⇧⌘I**; data URLs keep a single file self-contained
+- **Images** — show in Write/Preview; drag & drop, paste, or **⇧⌘I** (prefer `assets/`; data URL fallback); right-click Save/Copy
 - **Write / Source / Split** — word processor, raw Markdown, or both; optional **content-based** scroll sync (off by default)
 - **Links** — `.md` in-app (or new window); directories → sidebar only; web/HTML → browser; multi-segment relative paths; same-doc `#anchors`
 - **Find & Replace** — **⌘F** / **⌥⌘F**
@@ -24,6 +24,7 @@
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Data flow, dual Markdown pipelines, packages, modules |
 | **[docs/MARKDOWN.md](docs/MARKDOWN.md)** | Supported syntax, round-trip, limitations |
 | **[docs/PACKAGES.md](docs/PACKAGES.md)** | Zip packages (read-only), extract workflow, sample |
+| **[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)** | Code ready → Mac App Store listing → charging $2.99 |
 | **[CHANGELOG.md](CHANGELOG.md)** | Release notes |
 | This README | Features, build, DMG, shortcuts |
 

@@ -86,41 +86,77 @@ final class FolderBrowserModel {
     @ObservationIgnored private var scopedRoots: [URL] = []
     @ObservationIgnored private var directoryMonitor: DispatchSourceFileSystemObject?
     @ObservationIgnored private var monitorFD: Int32 = -1
+    /// Folder we were browsing before entering a zip (so Back can leave the package).
+    @ObservationIgnored private var folderBeforePackage: URL?
 
     private let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd", "mdx"]
 
-    /// True when the real filesystem parent exists and is readable (not limited to grant root).
-    /// In package mode, never climb above the extract root.
+    /// True when Back should be enabled: parent inside package, or leave package at root.
     var canGoUp: Bool {
-        guard let current = currentDirectory else { return false }
-        if let pkg = activePackage {
-            let root = pkg.extractRoot.standardizedFileURL
-            if current.standardizedFileURL.path == root.path { return false }
-            let parent = current.deletingLastPathComponent().standardizedFileURL
-            return parent.path.hasPrefix(root.path)
+        if activePackage != nil {
+            return parentDirectory != nil || canExitPackage
         }
-        let parent = current.deletingLastPathComponent().standardizedFileURL
-        if parent.path == current.standardizedFileURL.path { return false }
-        return canList(parent)
+        return parentDirectory != nil
     }
 
-    /// Real parent folder name (filesystem parent of the current directory).
+    /// At package extract root with a place to return to (previous folder or zip’s parent).
+    var canExitPackage: Bool {
+        guard isPackageMode, parentDirectory == nil else { return false }
+        return exitPackageTarget != nil
+    }
+
+    /// Destination after leaving the zip (sidebar folder before open, else parent of the .zip file).
+    var exitPackageTarget: URL? {
+        guard activePackage != nil else { return nil }
+        if let folderBeforePackage {
+            return Self.canonical(folderBeforePackage)
+        }
+        if let pkg = activePackage {
+            let parent = pkg.packageURL.deletingLastPathComponent().standardizedFileURL
+            if canList(parent) { return Self.canonical(parent) }
+        }
+        return nil
+    }
+
+    /// Label for the Back button.
     var parentFolderName: String? {
-        guard canGoUp, let parent = parentDirectory else { return nil }
-        if let pkg = activePackage, parent.standardizedFileURL == pkg.extractRoot.standardizedFileURL {
+        if canExitPackage {
+            if let target = exitPackageTarget {
+                return target.lastPathComponent
+            }
+            return "Close package"
+        }
+        guard let parent = parentDirectory else { return nil }
+        if let pkg = activePackage, Self.samePath(parent, pkg.extractRoot) {
             return pkg.sidebarRootLabel
         }
         return parent.lastPathComponent
     }
 
-    /// Real parent URL when `canGoUp`.
+    /// Help string for Back.
+    var goUpHelp: String {
+        if canExitPackage {
+            if let name = exitPackageTarget?.lastPathComponent {
+                return "Leave package and return to “\(name)” (⌘↑)"
+            }
+            return "Leave package (⌘↑)"
+        }
+        if canGoUp, let name = parentFolderName {
+            return "Go to parent folder “\(name)” (⌘↑)"
+        }
+        return "No parent folder available"
+    }
+
+    /// Real parent URL *inside* the package tree (nil at package root).
     var parentDirectory: URL? {
         guard let current = currentDirectory else { return nil }
         if let pkg = activePackage {
-            let root = pkg.extractRoot.standardizedFileURL
-            if current.standardizedFileURL.path == root.path { return nil }
-            let parent = current.deletingLastPathComponent().standardizedFileURL
-            if parent.path.hasPrefix(root.path) || parent.path == root.path {
+            let root = Self.canonical(pkg.extractRoot)
+            let cur = Self.canonical(current)
+            if Self.samePath(cur, root) { return nil }
+            let parent = cur.deletingLastPathComponent()
+            // Parent must stay inside the extract tree (root inclusive).
+            if Self.samePath(parent, root) || Self.isUnder(parent, root: root) {
                 return parent
             }
             return nil
@@ -135,11 +171,13 @@ final class FolderBrowserModel {
         guard let current = currentDirectory else { return [] }
         // Package: show zip display name as root segment.
         if let pkg = activePackage {
-            let rootPath = pkg.extractRoot.standardizedFileURL.path
-            let currentPath = current.standardizedFileURL.path
+            let root = Self.canonical(pkg.extractRoot)
+            let cur = Self.canonical(current)
             let rootLabel = pkg.sidebarRootLabel
-            if currentPath == rootPath { return [rootLabel] }
-            if currentPath.hasPrefix(rootPath + "/") {
+            if Self.samePath(cur, root) { return [rootLabel] }
+            if Self.isUnder(cur, root: root) {
+                let rootPath = root.path
+                let currentPath = cur.path
                 let rel = String(currentPath.dropFirst(rootPath.count))
                     .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
                 if rel.isEmpty { return [rootLabel] }
@@ -205,7 +243,12 @@ final class FolderBrowserModel {
 
     func openPackage(_ url: URL) {
         do {
-            closePackageIfNeeded()
+            // Remember where we were so Back at package root can leave the zip.
+            if activePackage == nil {
+                folderBeforePackage = currentDirectory.map { Self.canonical($0) }
+                    ?? url.deletingLastPathComponent().standardizedFileURL
+            }
+            closePackageIfNeeded(clearReturnFolder: false)
             let session = try ZipPackageService.open(url)
             activePackage = session
             // Browse the expanded tree; do not bookmark the temp extract as “last folder”.
@@ -224,12 +267,33 @@ final class FolderBrowserModel {
         }
     }
 
-    func closePackageIfNeeded() {
+    func closePackageIfNeeded(clearReturnFolder: Bool = true) {
         guard let session = activePackage else { return }
         stopMonitoring()
         ZipPackageService.close(session)
         activePackage = nil
+        if clearReturnFolder {
+            folderBeforePackage = nil
+        }
         onPackageSessionChanged?(nil)
+    }
+
+    /// Leave package mode and restore the folder we came from (or the zip’s parent).
+    func exitPackage() {
+        let restore = exitPackageTarget
+        closePackageIfNeeded(clearReturnFolder: true)
+        guard let restore else {
+            currentDirectory = nil
+            rootDirectory = nil
+            entries = []
+            errorMessage = nil
+            return
+        }
+        SecurityScopedRoots.accessForReading(restore)
+        // Prefer treating as already-granted navigation when under a scoped root.
+        let needsScope = !scopedRoots.contains { Self.samePath($0, restore) || Self.isUnder(restore, root: $0) }
+        openFolder(restore, securityScoped: needsScope)
+        NSLog("Markdowner: exited package → %@", restore.path)
     }
 
     /// Copy the package contents to a real folder so the user can edit with full save support.
@@ -273,7 +337,11 @@ final class FolderBrowserModel {
             if !scopedRoots.contains(where: { $0.standardizedFileURL == folder }) {
                 scopedRoots.append(folder)
             }
+            SecurityScopedRoots.register(folder)
             persistBookmark(for: folder)
+        } else {
+            // Still re-assert known scopes when navigating inside an already-granted tree.
+            SecurityScopedRoots.accessForReading(folder)
         }
 
         // Leaving package mode when opening a normal folder.
@@ -288,6 +356,11 @@ final class FolderBrowserModel {
         errorMessage = nil
         refresh()
         startMonitoring(folder)
+
+        // Write/Preview may have opened the .md before folder access existed — reload images.
+        if securityScoped {
+            NotificationCenter.default.post(name: .markdownerFolderAccessGranted, object: folder)
+        }
     }
 
     /// Navigate the sidebar to a directory without changing the open document
@@ -303,16 +376,17 @@ final class FolderBrowserModel {
 
         // Package mode: clamp navigation inside the extract tree.
         if let pkg = activePackage {
-            let rootPath = pkg.extractRoot.standardizedFileURL.path
-            if !folder.path.hasPrefix(rootPath) {
-                folder = pkg.extractRoot
+            let root = Self.canonical(pkg.extractRoot)
+            var target = Self.canonical(folder)
+            if !Self.samePath(target, root) && !Self.isUnder(target, root: root) {
+                target = root
             }
-            rootDirectory = pkg.extractRoot
-            currentDirectory = folder
+            rootDirectory = root
+            currentDirectory = target
             selectedURL = nil
             errorMessage = nil
             refresh()
-            startMonitoring(folder)
+            startMonitoring(target)
             return
         }
 
@@ -383,15 +457,41 @@ final class FolderBrowserModel {
     }
 
     func goUp() {
+        // At package root → leave the zip entirely (don’t trap the user).
+        if activePackage != nil, parentDirectory == nil, canExitPackage {
+            exitPackage()
+            return
+        }
         guard let parent = parentDirectory else { return }
         // Real parent only — never invent a synthetic parent.
         navigateToDirectory(parent)
     }
 
     func navigateToBreadcrumbIndex(_ index: Int) {
-        guard let root = rootDirectory else { return }
         let segs = breadcrumbSegments
         guard index >= 0, index < segs.count else { return }
+
+        // Package: segment 0 is the synthetic zip name; path is under extractRoot.
+        if let pkg = activePackage {
+            let root = Self.canonical(pkg.extractRoot)
+            if index == 0 {
+                currentDirectory = root
+            } else {
+                var url = root
+                // segs = [zipName, real, components…] — skip synthetic name.
+                for seg in segs.dropFirst().prefix(index) {
+                    url = url.appendingPathComponent(seg)
+                }
+                currentDirectory = Self.canonical(url)
+            }
+            refresh()
+            if let currentDirectory {
+                startMonitoring(currentDirectory)
+            }
+            return
+        }
+
+        guard let root = rootDirectory else { return }
         if index == 0 {
             currentDirectory = root
         } else {
@@ -410,9 +510,11 @@ final class FolderBrowserModel {
     func openEntry(_ entry: FolderEntry) {
         switch entry.kind {
         case .directory:
-            currentDirectory = entry.url
+            // Canonicalize so package back/up compares cleanly against extractRoot.
+            let dir = activePackage != nil ? Self.canonical(entry.url) : entry.url
+            currentDirectory = dir
             refresh()
-            startMonitoring(entry.url)
+            startMonitoring(dir)
         case .markdown:
             selectedURL = entry.url
             openMarkdownFile(entry.url)
@@ -534,6 +636,7 @@ final class FolderBrowserModel {
             if !scopedRoots.contains(where: { $0.standardizedFileURL == url.standardizedFileURL }) {
                 scopedRoots.append(url)
             }
+            SecurityScopedRoots.register(url)
             if isStale {
                 persistBookmark(for: url)
             }
@@ -565,6 +668,22 @@ final class FolderBrowserModel {
 
     private func canList(_ directory: URL) -> Bool {
         (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) != nil
+    }
+
+    /// Resolve `/var` ↔ `/private/var` and standardize for package path comparisons.
+    private static func canonical(_ url: URL) -> URL {
+        url.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    private static func samePath(_ a: URL, _ b: URL) -> Bool {
+        canonical(a).path == canonical(b).path
+    }
+
+    /// True when `url` is strictly inside `root` (not equal).
+    private static func isUnder(_ url: URL, root: URL) -> Bool {
+        let path = canonical(url).path
+        let rootPath = canonical(root).path
+        return path.hasPrefix(rootPath + "/")
     }
 
     private func openMarkdownFile(_ url: URL) {

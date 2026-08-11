@@ -148,7 +148,8 @@ private final class PDFExportSession: NSObject, WKNavigationDelegate {
         let session = PDFExportSession(webView: webView, completion: completion)
         active = session
         webView.navigationDelegate = session
-        webView.loadHTMLString(html, baseURL: nil)
+        // Resolve relative images (assets/…) against the open document folder when possible.
+        webView.loadHTMLString(html, baseURL: LinkHandling.documentDirectory)
     }
 
     private init(webView: WKWebView, completion: @escaping (Result<Data, Error>) -> Void) {

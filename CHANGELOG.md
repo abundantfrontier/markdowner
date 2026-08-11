@@ -7,9 +7,11 @@
 - Dock reopen and `markdowner://new-window` no longer race to open two workspaces
 - Disabled aggressive window restoration that reopened stacks of old windows
 - AppKit **File → New Window** (AX-friendly) without force-activating (avoids Space jumps)
+- **ClingBar window cycle on the current Space** — `markdowner://focus` / `markdowner://next-window` order only on-screen workspaces (SwiftUI AX raise was stuck on one window)
 
 ### Integration
 - URL scheme: `markdowner://new-window` (for ClingBar and scripts)
+- URL scheme: `markdowner://focus` / `markdowner://next-window` — focus or cycle workspaces on the **current Space only**
 - Debounced / tokenized `WorkspaceWindowBridge` as the sole open-window path
 
 ## 1.1.0 (2026-08-08)

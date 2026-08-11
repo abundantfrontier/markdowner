@@ -27,15 +27,13 @@ struct FileSidebarView: View {
                         Text(browser.parentFolderName.map { "\($0)" } ?? "Up")
                             .lineLimit(1)
                     } icon: {
-                        Image(systemName: "chevron.backward")
+                        Image(systemName: browser.canExitPackage ? "rectangle.portrait.and.arrow.right" : "chevron.backward")
                     }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!browser.canGoUp)
-                .help(browser.canGoUp
-                      ? "Go to parent folder “\(browser.parentFolderName ?? "")” (⌘↑)"
-                      : "No parent folder available")
+                .help(browser.goUpHelp)
                 .keyboardShortcut(.upArrow, modifiers: [.command])
 
                 Spacer(minLength: 4)
@@ -83,6 +81,14 @@ struct FileSidebarView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    if browser.canExitPackage {
+                        Button("Close") {
+                            browser.exitPackage()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption.weight(.semibold))
+                        .help(browser.goUpHelp)
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)

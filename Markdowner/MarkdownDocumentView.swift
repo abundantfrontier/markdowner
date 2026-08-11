@@ -67,11 +67,7 @@ struct MarkdownDocumentView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
         case .paragraph:
-            MarkdownInline.text(block.text)
-                .font(.system(size: 17))
-                .foregroundStyle(.primary)
-                .lineSpacing(6)
-                .fixedSize(horizontal: false, vertical: true)
+            inlineFlow(block.text, fontSize: 17, secondary: false)
 
         case .blockquote:
             HStack(alignment: .top, spacing: 0) {
@@ -79,11 +75,7 @@ struct MarkdownDocumentView: View {
                     .fill(Color.secondary.opacity(0.35))
                     .frame(width: 3)
                     .padding(.trailing, 14)
-                MarkdownInline.text(block.text)
-                    .font(.system(size: 16.5))
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(5)
-                    .fixedSize(horizontal: false, vertical: true)
+                inlineFlow(block.text, fontSize: 16.5, secondary: true)
             }
             .padding(.vertical, 4)
 
@@ -216,9 +208,20 @@ struct MarkdownDocumentView: View {
         }
     }
 
+    private func listDepthAndBody(_ text: String) -> (depth: Int, body: String) {
+        var d = 0
+        var s = text
+        while s.hasPrefix("›") {
+            d += 1
+            s = String(s.dropFirst())
+        }
+        return (d, s)
+    }
+
     /// Title line + following body paragraphs for a list item.
     private func splitListItemBody(_ text: String) -> (title: String, body: [String]) {
-        let normalized = text
+        let stripped = listDepthAndBody(text).body
+        let normalized = stripped
             .replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return ("", []) }
@@ -254,46 +257,123 @@ struct MarkdownDocumentView: View {
 
     @ViewBuilder
     private func orderedListItemView(number: Int, text: String) -> some View {
+        let depth = listDepthAndBody(text).depth
         let parts = splitListItemBody(text)
+        let lead = CGFloat(depth) * 22
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("\(number).")
                     .font(.system(size: 17, weight: .bold).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 28, alignment: .trailing)
-                MarkdownInline.text(parts.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
+                inlineFlow(parts.title, fontSize: 17, secondary: false, semibold: true)
             }
             ForEach(Array(parts.body.enumerated()), id: \.offset) { _, para in
-                MarkdownInline.text(para)
-                    .font(.system(size: 16.5))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(5)
+                inlineFlow(para, fontSize: 16.5, secondary: false)
                     .padding(.leading, 38)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .padding(.leading, lead)
     }
 
     @ViewBuilder
     private func unorderedListItemView(text: String) -> some View {
+        let depth = listDepthAndBody(text).depth
         let parts = splitListItemBody(text)
+        let lead = CGFloat(depth) * 22
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("•")
                     .font(.system(size: 17, weight: .bold))
                     .frame(width: 18, alignment: .center)
-                MarkdownInline.text(parts.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
+                inlineFlow(parts.title, fontSize: 17, secondary: false, semibold: true)
             }
             ForEach(Array(parts.body.enumerated()), id: \.offset) { _, para in
-                MarkdownInline.text(para)
-                    .font(.system(size: 16.5))
-                    .lineSpacing(5)
+                inlineFlow(para, fontSize: 16.5, secondary: false)
                     .padding(.leading, 28)
-                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.leading, lead)
+    }
+
+    /// Text + inline images for Preview.
+    @ViewBuilder
+    private func inlineFlow(
+        _ source: String,
+        fontSize: CGFloat,
+        secondary: Bool,
+        semibold: Bool = false
+    ) -> some View {
+        let segments = MarkdownInlineSegments.parse(source)
+        if segments.count == 1, case .text(let only) = segments[0] {
+            MarkdownInline.text(only)
+                .font(.system(size: fontSize, weight: semibold ? .semibold : .regular))
+                .foregroundStyle(secondary ? .secondary : .primary)
+                .lineSpacing(6)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if segments.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
+                    switch seg {
+                    case .text(let t):
+                        if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            MarkdownInline.text(t)
+                                .font(.system(size: fontSize, weight: semibold ? .semibold : .regular))
+                                .foregroundStyle(secondary ? .secondary : .primary)
+                                .lineSpacing(6)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    case .image(let alt, let src):
+                        MarkdownImageView(alt: alt, src: src)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Image in Preview
+
+struct MarkdownImageView: View {
+    let alt: String
+    let src: String
+
+    var body: some View {
+        Group {
+            if let image = MarkdownImage.loadNSImage(src: src) {
+                let presented = MarkdownImage.presentationImage(image, maxWidth: MarkdownImage.maxDisplayWidth)
+                let size = MarkdownImage.displaySize(for: presented, maxWidth: MarkdownImage.maxDisplayWidth)
+                Image(nsImage: presented)
+                    .resizable()
+                    .interpolation(size.width <= 64 ? .none : .medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        width: min(size.width, MarkdownImage.maxDisplayWidth),
+                        height: size.height,
+                        alignment: .leading
+                    )
+                    .frame(maxWidth: MarkdownImage.maxDisplayWidth, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: size.width <= 40 ? 2 : 8, style: .continuous))
+                    .accessibilityLabel(alt.isEmpty ? "Image" : alt)
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                    Text(alt.isEmpty ? "Missing image" : alt)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text(src)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
@@ -471,15 +551,19 @@ enum MarkdownBlockParser {
                 continue
             }
 
-            // Unordered list (title line + following body until next block marker)
+            // Unordered list (title line + following body until next block marker).
+            // Nested items use 2-space (or tab) indent → encoded as leading "›" depth marks.
             if isUnorderedListItem(trimmed) {
                 var items: [String] = []
                 while i < lines.count {
-                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    let raw = lines[i]
+                    let l = raw.trimmingCharacters(in: .whitespaces)
                     if let item = parseUnorderedItem(l) {
+                        let depth = listIndentDepth(raw)
                         i += 1
                         let body = collectListItemBody(lines: lines, index: &i)
-                        items.append(mergeListTitle(item, body: body))
+                        let merged = mergeListTitle(item, body: body)
+                        items.append(String(repeating: "›", count: depth) + merged)
                     } else {
                         break
                     }
@@ -492,11 +576,14 @@ enum MarkdownBlockParser {
             if isOrderedListItem(trimmed) {
                 var items: [(number: Int, text: String)] = []
                 while i < lines.count {
-                    let l = lines[i].trimmingCharacters(in: .whitespaces)
+                    let raw = lines[i]
+                    let l = raw.trimmingCharacters(in: .whitespaces)
                     if let item = parseOrderedItem(l) {
+                        let depth = listIndentDepth(raw)
                         i += 1
                         let body = collectListItemBody(lines: lines, index: &i)
-                        items.append((item.number, mergeListTitle(item.text, body: body)))
+                        let merged = mergeListTitle(item.text, body: body)
+                        items.append((item.number, String(repeating: "›", count: depth) + merged))
                     } else {
                         break
                     }
@@ -562,6 +649,17 @@ enum MarkdownBlockParser {
 
     private static func isUnorderedListItem(_ line: String) -> Bool {
         line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ")
+    }
+
+    /// 2 spaces or 1 tab ≈ one nesting level (capped).
+    private static func listIndentDepth(_ rawLine: String) -> Int {
+        var spaces = 0
+        for ch in rawLine {
+            if ch == " " { spaces += 1 }
+            else if ch == "\t" { spaces += 2 }
+            else { break }
+        }
+        return min(spaces / 2, 8)
     }
 
     private static func parseUnorderedItem(_ line: String) -> String? {

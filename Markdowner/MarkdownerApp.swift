@@ -469,6 +469,8 @@ extension Notification.Name {
     static let markdownerDuplicateDocumentWindow = Notification.Name("markdowner.duplicateDocumentWindow")
     /// Request a new `WindowGroup(id: "workspace")` from AppDelegate / URL / non-key context.
     static let markdownerOpenNewWindow = Notification.Name("markdowner.openNewWindow")
+    /// Posted when the user grants folder access (Open Folder…) so Write can reload images.
+    static let markdownerFolderAccessGranted = Notification.Name("markdowner.folderAccessGranted")
     static let markdownerNavigateDirectory = Notification.Name("markdowner.navigateDirectory")
     static let markdownerNavigateAnchor = Notification.Name("markdowner.navigateAnchor")
     static let markdownerFindInEditor = Notification.Name("markdowner.findInEditor")

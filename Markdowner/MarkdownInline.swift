@@ -13,6 +13,23 @@ enum MarkdownInline {
         var i = source.startIndex
 
         while i < source.endIndex {
+            // Images must run before links (`![alt](src)` starts with `!` then `[`).
+            // SwiftUI AttributedString cannot host NSImage attachments; Preview uses
+            // `MarkdownInlineSegments` + `MarkdownImageView`. Here we keep a short
+            // visible placeholder so Source→Write text paths stay non-empty.
+            let slice = String(source[i...])
+            if let img = MarkdownImage.matchImagePrefix(slice) {
+                var chunk = AttributedString(img.alt.isEmpty ? "🖼" : "🖼 \(img.alt)")
+                chunk.foregroundColor = .secondary
+                if let u = makeURL(img.src) {
+                    chunk.link = u
+                }
+                result.append(chunk)
+                let len = slice.distance(from: slice.startIndex, to: img.end)
+                i = source.index(i, offsetBy: len)
+                continue
+            }
+
             // Bold link with optional code: **[ ... ](url)**  or **[`code`](url)**
             // Capture groups (after drop full match): 0=tick?, 1=label, 2=url
             if let match = matchPrefix(
