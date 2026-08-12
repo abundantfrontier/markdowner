@@ -1,6 +1,6 @@
 # Markdowner
 
-**Version 1.1.1** — native **macOS 26+** WYSIWYG Markdown word processor. Write like a document app; files stay portable `.md`. Browse folders of notes—or a **read-only `.zip` package**—from a Finder-style sidebar.
+**Version 1.1.2** — native **macOS 26+** WYSIWYG Markdown word processor. Write like a document app; files stay portable `.md`. Browse folders of notes—or a **read-only `.zip` package**—from a Finder-style sidebar.
 
 ![Markdowner — folder sidebar and Write mode](docs/images/screenshot.jpg)
 
@@ -8,7 +8,7 @@
 
 - **File sidebar** — folders + Markdown; optional filter; live refresh; `.zip` packages listed and openable
 - **True WYSIWYG editing** — headings, bold, italic, lists, quotes, code, links, tables, task lists (`NSTextView`)
-- **Images** — show in Write/Preview; drag & drop, paste, or **⇧⌘I** (prefer `assets/`; data URL fallback); right-click Save/Copy
+- **Images** — show in Write/Preview; drag in/out, paste, or **⇧⌘I** (prefer `assets/` when saved; embed only if unsaved); right-click Save/Copy
 - **Write / Source / Split** — word processor, raw Markdown, or both; optional **content-based** scroll sync (off by default)
 - **Links** — `.md` in-app (or new window); directories → sidebar only; web/HTML → browser; multi-segment relative paths; same-doc `#anchors`
 - **Find & Replace** — **⌘F** / **⌥⌘F**
@@ -40,7 +40,7 @@
 
 ## Install (DMG)
 
-1. Open `releases/Markdowner-1.1.1.dmg` (or build one below).
+1. Open `releases/Markdowner-1.1.2.dmg` (or build one below).
 2. Drag **Markdowner** to **Applications**.
 3. First launch on another Mac may need **right-click → Open** (ad-hoc signed, not notarized).
 
@@ -64,8 +64,8 @@ open build/Build/Products/Debug/Markdowner.app
 
 Produces:
 
-- `dist/Markdowner-1.1.1.dmg` (and `dist/Markdowner.dmg`)
-- Copy shipped for the repo: `releases/Markdowner-1.1.1.dmg`
+- `dist/Markdowner-1.1.2.dmg` (and `dist/Markdowner.dmg`)
+- Copy shipped for the repo: `releases/Markdowner-1.1.2.dmg`
 - Release app: `build/Build/Products/Release/Markdowner.app`
 
 Ad-hoc signed only. For public distribution: Developer ID + `notarytool`.
@@ -168,7 +168,7 @@ docs/
 scripts/
   package-dmg.sh, generate-build-info.sh
 releases/
-  Markdowner-1.1.1.dmg
+  Markdowner-1.1.2.dmg
 ```
 
 ## License

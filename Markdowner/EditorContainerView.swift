@@ -434,18 +434,29 @@ struct EditorContainerView: View {
         if let heic = UTType(filenameExtension: "heic") { types.append(heic) }
         panel.allowedContentTypes = types
         panel.allowsMultipleSelection = false
-        panel.message = "Images are copied into assets/ next to the document when possible"
+        panel.message = "Images are copied into assets/ next to the saved document"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            // Prefer relative assets/ when the doc has a folder; else embed.
-            let mode: MarkdownImage.InsertMode =
-                (LinkHandling.documentDirectory != nil || workspace.fileURL != nil)
-                ? .copyToAssets : .embedDataURL
             if workspace.fileURL != nil {
                 LinkHandling.currentDocumentURL = workspace.fileURL
                 LinkHandling.documentDirectory = workspace.fileURL?.deletingLastPathComponent()
             }
-            guard let snippet = MarkdownImage.markdownSnippet(forFileURL: url, mode: mode) else { return }
+            // Prefer assets/ whenever we have a folder; embed only if still unsaved.
+            let mode = MarkdownImage.preferredInsertMode()
+            if mode == .copyToAssets, !MarkdownImage.canWriteAssets {
+                let alert = NSAlert()
+                alert.messageText = "Save the document first"
+                alert.informativeText = "Images are stored under assets/ next to your Markdown file. Save, then insert again."
+                alert.runModal()
+                return
+            }
+            guard let snippet = MarkdownImage.markdownSnippet(forFileURL: url, mode: mode) else {
+                let alert = NSAlert()
+                alert.messageText = "Couldn’t insert image"
+                alert.informativeText = "Save the document so Markdowner can write into assets/, then try again."
+                alert.runModal()
+                return
+            }
             DispatchQueue.main.async {
                 workspace.updateText(workspace.text + snippet)
             }

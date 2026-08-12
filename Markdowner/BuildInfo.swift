@@ -5,13 +5,13 @@ import Foundation
 
 enum BuildInfo {
     /// Human-readable local time when this binary was compiled.
-    static let timestamp = "2026-08-11 16:24:23 PDT"
+    static let timestamp = "2026-08-11 17:33:31 PDT"
 
     /// Compact stamp for quick comparison (e.g. 20260806.213206).
-    static let stamp = "20260811.162423"
+    static let stamp = "20260811.173331"
 
     /// Machine-sortable build instant.
-    static let isoTimestamp = "2026-08-11T16:24:23-0700"
+    static let isoTimestamp = "2026-08-11T17:33:31-0700"
 
     static var marketingVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"

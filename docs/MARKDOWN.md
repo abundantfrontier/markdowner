@@ -96,9 +96,11 @@ Write mode shows real images (not just source text). Preview and HTML/PDF export
 
 | Action | Behavior |
 |--------|----------|
-| Toolbar / **⇧⌘I** | Pick a file → prefer copy into `assets/` next to the document; embed data URL if unsaved |
-| Drag image from Finder | Same as insert (copy to `assets/` when possible) |
-| Paste image / screenshot | Write PNG under `assets/` or embed if no document folder |
+| Toolbar / **⇧⌘I** | Pick a file → copy into `assets/` when the doc is saved; embed data URL only if still unsaved |
+| Drag image **from** Finder | Same as insert (`assets/` when saved); blue insertion bar shows drop position |
+| Drag image **within** Write | Reorder — drop on the blue bar to move the attachment |
+| Drag image **out** of Write | Drag attachment to Finder / other apps (file URL when possible, else temp PNG + bitmap) |
+| Paste image / screenshot | Prefer `assets/`; embed only for unsaved buffers |
 | Right-click image (Write) | **Save Image…**, **Copy Image**, **Copy Markdown**, **Reveal in Finder** (file-based) |
 
 Preferred portable form (folder of notes):

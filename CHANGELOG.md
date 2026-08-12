@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.2 (2026-08-11)
+
+### Added
+- **Images in Write & Preview** — `![alt](path)` and data URLs render as real pictures (not plain link text)
+- **Image insert** — **⇧⌘I**, drag-in from Finder, paste/screenshot; prefer **`assets/`** next to a saved document (embed only when unsaved)
+- **Image drag-out** to Finder / other apps; **right-click** Save / Copy / Copy Markdown / Reveal in Finder
+- **Drop caret** — blue insertion bar shows where a dragged image will land
+- **Reorder images** in Write by dragging attachments within the document
+- Clickable **task list** checkboxes in Write
+- Nested list indent display; light **syntax coloring** in fenced code blocks (Write)
+- **Leave zip package** — Back at package root (and package **Close**) returns to the previous folder
+
+### Fixed
+- Sandbox: relative images need **Open Folder** access; no more permission alert when clicking missing images
+- Package path comparisons (`/var` vs `/private/var`) so Back works inside zip trees
+- Tiny 1×1 assets upscaled so they stay visible; sample `dot.png` fixtures are striped for testing
+
+### Samples / docs
+- `docs/samples/phase12-test/` test document
+- Updated `docs/samples/sample-curriculum-package.zip` assets
+- `docs/MARKDOWN.md` image behavior
+
 ## 1.1.1 (2026-08-09)
 
 ### Fixed

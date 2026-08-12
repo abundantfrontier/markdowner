@@ -481,30 +481,74 @@ private final class FlippedDocumentView: NSView {
 // MARK: - Editable rich Write mode
 
 /// `NSTextView` that follows Markdown links with a plain click (or ⌘-click),
-/// toggles task checkboxes, and accepts image drag-and-drop.
+/// toggles task checkboxes, and accepts image drag-and-drop (in, out, and reorder).
 private final class LinkAwareTextView: NSTextView {
     var onImagesDropped: (([URL]) -> Void)?
     var onImagePaste: ((NSImage) -> Void)?
+    /// Move an existing Write-mode image from one character index to another.
+    var onImageMoved: ((_ src: String, _ alt: String, _ fromChar: Int, _ toChar: Int) -> Void)?
+
+    /// Pending drag of an inline image attachment.
+    private var pendingImageDrag: (charIndex: Int, start: NSPoint)?
+    /// Character index of image being dragged (for in-doc move).
+    private var draggingImageFromChar: Int?
+    /// Blue insertion bar while dragging over the editor.
+    private let dropCaretView: NSView = {
+        let v = NSView(frame: .zero)
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        v.layer?.cornerRadius = 1
+        v.isHidden = true
+        return v
+    }()
+
+    fileprivate static let internalImageType = NSPasteboard.PasteboardType("com.markdowner.internal-image")
+
+    /// Types Finder actually puts on the pasteboard for a desktop JPG/PNG drop.
+    fileprivate static let imageDropTypes: [NSPasteboard.PasteboardType] = [
+        internalImageType,
+        .fileURL,
+        NSPasteboard.PasteboardType("public.file-url"),
+        NSPasteboard.PasteboardType("NSFilenamesPboardType"), // legacy Finder paths
+        .tiff,
+        .png,
+        NSPasteboard.PasteboardType("public.jpeg"),
+        NSPasteboard.PasteboardType("public.png"),
+        NSPasteboard.PasteboardType("public.tiff"),
+        NSPasteboard.PasteboardType("public.heic"),
+        NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+        NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-content-type"),
+    ]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        registerForDraggedTypes([.fileURL, .tiff, .png])
+        registerForDraggedTypes(Self.imageDropTypes)
+        addSubview(dropCaretView)
     }
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
-        registerForDraggedTypes([.fileURL, .tiff, .png])
+        registerForDraggedTypes(Self.imageDropTypes)
+        addSubview(dropCaretView)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        registerForDraggedTypes([.fileURL, .tiff, .png])
+        registerForDraggedTypes(Self.imageDropTypes)
+        addSubview(dropCaretView)
     }
 
     override func mouseDown(with event: NSEvent) {
+        pendingImageDrag = nil
         if event.clickCount == 1, !event.modifierFlags.contains(.shift) {
             if let charIndex = characterIndex(at: event),
                toggleTaskCheckbox(at: charIndex) {
+                return
+            }
+            if let charIndex = characterIndex(at: event), isImageAttachment(at: charIndex) {
+                pendingImageDrag = (charIndex, event.locationInWindow)
+                // Still focus/select via super; drag starts on mouseDragged threshold.
+                super.mouseDown(with: event)
                 return
             }
             if let hit = linkHit(at: event) {
@@ -525,6 +569,94 @@ private final class LinkAwareTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        if let pending = pendingImageDrag {
+            let dx = event.locationInWindow.x - pending.start.x
+            let dy = event.locationInWindow.y - pending.start.y
+            if hypot(dx, dy) > 6 {
+                let index = pending.charIndex
+                pendingImageDrag = nil
+                if beginDraggingImage(at: index, event: event) {
+                    return
+                }
+            }
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pendingImageDrag = nil
+        super.mouseUp(with: event)
+    }
+
+    // MARK: NSDraggingSource — NSTextView already conforms
+
+    override func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        // Inside the app: allow move (reorder). Outside: copy file/image.
+        switch context {
+        case .withinApplication:
+            return [.move, .copy]
+        case .outsideApplication:
+            return .copy
+        @unknown default:
+            return [.move, .copy]
+        }
+    }
+
+    override func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        draggingImageFromChar = nil
+        hideDropCaret()
+        super.draggingSession(session, endedAt: screenPoint, operation: operation)
+    }
+
+    @discardableResult
+    private func beginDraggingImage(at charIndex: Int, event: NSEvent) -> Bool {
+        guard let storage = textStorage, charIndex >= 0, charIndex < storage.length else { return false }
+        let src = storage.attribute(MarkdownImage.srcKey, at: charIndex, effectiveRange: nil) as? String ?? ""
+        let alt = storage.attribute(MarkdownImage.altKey, at: charIndex, effectiveRange: nil) as? String ?? "image"
+        let image: NSImage? = MarkdownImage.loadNSImage(src: src)
+            ?? (storage.attribute(.attachment, at: charIndex, effectiveRange: nil) as? NSTextAttachment)?.image
+        guard let image else { return false }
+
+        draggingImageFromChar = charIndex
+        let writer = MarkdownImagePasteboardWriter(
+            src: src,
+            alt: alt,
+            image: image,
+            fromCharIndex: charIndex
+        )
+        let item = NSDraggingItem(pasteboardWriter: writer)
+
+        var frame = NSRect(x: 0, y: 0, width: 72, height: 72)
+        if let lm = layoutManager, let tc = textContainer {
+            let gr = lm.glyphRange(
+                forCharacterRange: NSRange(location: charIndex, length: 1),
+                actualCharacterRange: nil
+            )
+            var rect = lm.boundingRect(forGlyphRange: gr, in: tc)
+            rect.origin.x += textContainerOrigin.x
+            rect.origin.y += textContainerOrigin.y
+            if rect.width > 2, rect.height > 2 {
+                frame = rect
+            }
+        }
+        let preview = MarkdownImage.presentationImage(image, maxWidth: 160)
+        item.setDraggingFrame(frame, contents: preview)
+        beginDraggingSession(with: [item], event: event, source: self)
+        return true
+    }
+
+    private func isImageAttachment(at charIndex: Int) -> Bool {
+        guard let storage = textStorage, charIndex >= 0, charIndex < storage.length else { return false }
+        if storage.attribute(MarkdownImage.srcKey, at: charIndex, effectiveRange: nil) != nil {
+            return true
+        }
+        return storage.attribute(.attachment, at: charIndex, effectiveRange: nil) is NSTextAttachment
+    }
+
     override func paste(_ sender: Any?) {
         let pb = NSPasteboard.general
         if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage], let img = imgs.first {
@@ -540,45 +672,292 @@ private final class LinkAwareTextView: NSTextView {
         super.paste(sender)
     }
 
-    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        let pb = sender.draggingPasteboard
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
-            .urlReadingFileURLsOnly: true
-        ]) as? [URL] {
-            let images = urls.filter { isImageFile($0) }
-            if !images.isEmpty {
-                onImagesDropped?(images)
-                return true
-            }
+    // MARK: Drag-in / reorder (Finder → Write, and image move within Write)
+
+    /// Important: do **not** call `super` for image file drops. With `importsGraphics == false`,
+    /// NSTextView rejects file URLs and the drop never reaches us.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard canAcceptImageDrop(sender) else {
+            hideDropCaret()
+            return []
         }
-        if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage], let img = imgs.first {
-            onImagePaste?(img)
-            return true
-        }
-        return super.performDragOperation(sender)
+        updateDropCaret(atDraggingLocation: sender.draggingLocation)
+        return dropOperation(for: sender)
     }
 
-    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        if hasImagePayload(sender.draggingPasteboard) { return .copy }
-        return super.draggingEntered(sender)
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard canAcceptImageDrop(sender) else {
+            hideDropCaret()
+            return []
+        }
+        updateDropCaret(atDraggingLocation: sender.draggingLocation)
+        return dropOperation(for: sender)
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        hideDropCaret()
+        super.draggingExited(sender)
     }
 
     override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        if hasImagePayload(sender.draggingPasteboard) { return true }
-        return super.prepareForDragOperation(sender)
+        canAcceptImageDrop(sender)
     }
 
-    private func hasImagePayload(_ pb: NSPasteboard) -> Bool {
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        hideDropCaret()
+        super.concludeDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        placeInsertionPoint(atDraggingLocation: sender.draggingLocation)
+        hideDropCaret()
+
+        let pb = sender.draggingPasteboard
+        let toChar = selectedRange().location
+
+        // In-document reorder (drag image to a new place in Write).
+        if let payload = internalImagePayload(from: pb), let from = payload.fromChar {
+            let to = toChar
+            // No-op if dropped on itself / immediately after.
+            if to == from || to == from + 1 {
+                draggingImageFromChar = nil
+                return true
+            }
+            NSLog("Markdowner: move image char %d → %d", from, to)
+            onImageMoved?(payload.src, payload.alt, from, to)
+            draggingImageFromChar = nil
+            return true
+        }
+
+        let urls = imageFileURLs(from: pb)
+        if !urls.isEmpty {
+            NSLog(
+                "Markdowner: drag-in %d image file(s) at selection %@",
+                urls.count,
+                NSStringFromRange(selectedRange())
+            )
+            onImagesDropped?(urls)
+            return true
+        }
+        if let imgs = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           let img = imgs.first {
+            NSLog("Markdowner: drag-in NSImage pasteboard")
+            onImagePaste?(img)
+            return true
+        }
+        NSLog("Markdowner: drag-in rejected — types=%@", pb.types?.map(\.rawValue).joined(separator: ",") ?? "none")
+        return false
+    }
+
+    private func dropOperation(for sender: any NSDraggingInfo) -> NSDragOperation {
+        if internalImagePayload(from: sender.draggingPasteboard) != nil {
+            return .move
+        }
+        return .copy
+    }
+
+    private struct InternalImagePayload {
+        let src: String
+        let alt: String
+        let fromChar: Int?
+    }
+
+    private func internalImagePayload(from pb: NSPasteboard) -> InternalImagePayload? {
+        guard let dict = pb.propertyList(forType: Self.internalImageType) as? [String: Any],
+              let src = dict["src"] as? String
+        else { return nil }
+        let alt = dict["alt"] as? String ?? "image"
+        let from = dict["from"] as? Int
+        return InternalImagePayload(src: src, alt: alt, fromChar: from)
+    }
+
+    /// Set the caret from a window-space drag location.
+    private func placeInsertionPoint(atDraggingLocation windowPoint: NSPoint) {
+        let charIndex = characterIndex(atDraggingLocation: windowPoint)
+        setSelectedRange(NSRange(location: charIndex, length: 0))
+        window?.makeFirstResponder(self)
+    }
+
+    private func characterIndex(atDraggingLocation windowPoint: NSPoint) -> Int {
+        let point = convert(windowPoint, from: nil)
+        let inset = textContainerInset
+        let adjusted = NSPoint(x: point.x - inset.width, y: point.y - inset.height)
+        guard let lm = layoutManager, let tc = textContainer else {
+            return textStorage?.length ?? 0
+        }
+        var fraction: CGFloat = 0
+        let glyphIndex = lm.glyphIndex(for: adjusted, in: tc, fractionOfDistanceThroughGlyph: &fraction)
+        var charIndex = lm.characterIndexForGlyph(at: glyphIndex)
+        if fraction > 0.5, let storage = textStorage, charIndex < storage.length {
+            charIndex += 1
+        }
+        if let storage = textStorage {
+            charIndex = min(max(charIndex, 0), storage.length)
+        }
+        return charIndex
+    }
+
+    /// Blue insertion bar + system caret at the prospective drop index.
+    private func updateDropCaret(atDraggingLocation windowPoint: NSPoint) {
+        let charIndex = characterIndex(atDraggingLocation: windowPoint)
+        setSelectedRange(NSRange(location: charIndex, length: 0))
+        window?.makeFirstResponder(self)
+
+        guard let lm = layoutManager, let tc = textContainer else {
+            hideDropCaret()
+            return
+        }
+        let length = textStorage?.length ?? 0
+        let idx = min(max(charIndex, 0), max(length, 0))
+
+        var caretRect: NSRect
+        if length == 0 {
+            caretRect = NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y, width: 2, height: 20)
+        } else {
+            let safeChar = min(idx, max(length - 1, 0))
+            let glyphIndex = lm.glyphIndexForCharacter(at: safeChar)
+            let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            var loc = lm.location(forGlyphAt: glyphIndex)
+            // If inserting after this glyph (end of line / after char), nudge to the right edge.
+            if idx >= length || (idx > safeChar) {
+                let used = lm.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+                loc.x = max(loc.x, used.maxX - lineRect.minX)
+            }
+            caretRect = NSRect(
+                x: textContainerOrigin.x + lineRect.minX + loc.x,
+                y: textContainerOrigin.y + lineRect.minY,
+                width: 2.5,
+                height: max(lineRect.height, 16)
+            )
+        }
+        dropCaretView.frame = caretRect.insetBy(dx: 0, dy: 1)
+        dropCaretView.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        dropCaretView.isHidden = false
+        dropCaretView.alphaValue = 0.95
+    }
+
+    private func hideDropCaret() {
+        dropCaretView.isHidden = true
+    }
+
+    private func canAcceptImageDrop(_ sender: any NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        if internalImagePayload(from: pb) != nil { return true }
+        if !imageFileURLs(from: pb).isEmpty { return true }
         if pb.canReadObject(forClasses: [NSImage.self], options: nil) { return true }
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
-            return urls.contains(where: isImageFile)
+        // Promised files (some Finder / Photos drops): accept if any promised type looks like an image.
+        if let types = pb.types {
+            for t in types where t.rawValue.contains("promised") || t.rawValue.contains("file") {
+                return true
+            }
         }
         return false
     }
 
+    /// Collect image file URLs from modern + legacy Finder pasteboard representations.
+    private func imageFileURLs(from pb: NSPasteboard) -> [URL] {
+        var found: [URL] = []
+
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL] {
+            found.append(contentsOf: urls)
+        }
+
+        // Legacy: NSFilenamesPboardType → [String] paths
+        let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        if let paths = pb.propertyList(forType: filenamesType) as? [String] {
+            found.append(contentsOf: paths.map { URL(fileURLWithPath: $0) })
+        }
+
+        // Sometimes a single public.file-url string
+        if let s = pb.string(forType: .fileURL), let u = URL(string: s), u.isFileURL {
+            found.append(u)
+        }
+        if let s = pb.string(forType: NSPasteboard.PasteboardType("public.file-url")),
+           let u = URL(string: s), u.isFileURL {
+            found.append(u)
+        }
+
+        // Deduplicate + keep images only
+        var seen = Set<String>()
+        var images: [URL] = []
+        for url in found {
+            let path = url.standardizedFileURL.path
+            guard !path.isEmpty, !seen.contains(path) else { continue }
+            seen.insert(path)
+            if isImageFile(url) {
+                images.append(url.standardizedFileURL)
+            }
+        }
+        return images
+    }
+
     private func isImageFile(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
-        return ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic"].contains(ext)
+        if ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic", "heif", "jfif"].contains(ext) {
+            return true
+        }
+        // UTI fallback when extension is missing / odd
+        if let values = try? url.resourceValues(forKeys: [.contentTypeKey]),
+           let type = values.contentType {
+            return type.conforms(to: .image)
+        }
+        return false
+    }
+
+    /// Pasteboard payload for drag-out / reorder: internal move token + TIFF/PNG + optional file URL.
+    private final class MarkdownImagePasteboardWriter: NSObject, NSPasteboardWriting {
+        let src: String
+        let alt: String
+        let image: NSImage
+        let fromCharIndex: Int?
+        private lazy var promisedFileURL: URL? = {
+            if let file = MarkdownImage.fileURLForDrag(src: src) {
+                return file
+            }
+            return MarkdownImage.temporaryFileForDrag(image: image, preferredName: alt)
+        }()
+
+        init(src: String, alt: String, image: NSImage, fromCharIndex: Int? = nil) {
+            self.src = src
+            self.alt = alt
+            self.image = image
+            self.fromCharIndex = fromCharIndex
+            super.init()
+        }
+
+        func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+            var types: [NSPasteboard.PasteboardType] = [.tiff, .png]
+            if fromCharIndex != nil {
+                types.insert(LinkAwareTextView.internalImageType, at: 0)
+            }
+            if promisedFileURL != nil {
+                types.insert(.fileURL, at: 0)
+            }
+            return types
+        }
+
+        func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+            if type == LinkAwareTextView.internalImageType {
+                var dict: [String: Any] = ["src": src, "alt": alt]
+                if let fromCharIndex {
+                    dict["from"] = fromCharIndex
+                }
+                return dict
+            }
+            switch type {
+            case .fileURL:
+                guard let url = promisedFileURL else { return nil }
+                return url.absoluteURL as NSURL
+            case .tiff:
+                return image.tiffRepresentation
+            case .png:
+                return MarkdownImage.pngData(from: image)
+            default:
+                return nil
+            }
+        }
     }
 
     /// Toggle `- [ ]` / `- [x]` when the user clicks ☑ / ☐.
@@ -708,12 +1087,19 @@ struct RichMarkdownTextView: NSViewRepresentable {
         tv.onImagePaste = { [weak coordinator] image in
             coordinator?.insertPastedImage(image)
         }
+        tv.onImageMoved = { [weak coordinator] src, alt, from, to in
+            coordinator?.moveImage(src: src, alt: alt, fromChar: from, toChar: to)
+        }
+        // Re-assert drop types after full setup (some AppKit paths clear registrations).
+        tv.registerForDraggedTypes(LinkAwareTextView.imageDropTypes)
 
         tv.textStorage?.setAttributedString(MarkdownRichText.attributedString(from: text))
         context.coordinator.lastMarkdown = text
         context.coordinator.textView = tv
 
         scroll.documentView = tv
+        // Let drops land on the document view even when they hit the scroll chrome slightly.
+        scroll.registerForDraggedTypes(LinkAwareTextView.imageDropTypes)
         return scroll
     }
 
@@ -912,10 +1298,33 @@ struct RichMarkdownTextView: NSViewRepresentable {
 
         func insertImageFiles(_ urls: [URL]) {
             guard !isReadOnly else { return }
+            // Refresh doc folder from last markdown path if LinkHandling was cleared.
+            if !MarkdownImage.canWriteAssets, let md = lastMarkdown.isEmpty ? nil as String? : lastMarkdown {
+                _ = md
+            }
+            // Saved docs → assets/ only (no silent huge data-URL embeds).
+            if !MarkdownImage.canWriteAssets {
+                // Unsaved: embed each file as data URL so drag-in still works.
+                var embedded: [String] = []
+                for url in urls {
+                    if let s = MarkdownImage.markdownSnippet(forFileURL: url, mode: .embedDataURL) {
+                        embedded.append(s.trimmingCharacters(in: .newlines))
+                    }
+                }
+                if !embedded.isEmpty {
+                    insertMarkdownSnippet("\n\n" + embedded.joined(separator: "\n\n") + "\n\n")
+                    return
+                }
+                presentImageNeedsSaveAlert()
+                return
+            }
             var snippets: [String] = []
             for url in urls {
+                // Security-scoped access for Finder drops is acquired inside markdownSnippet.
                 if let s = MarkdownImage.markdownSnippet(forFileURL: url, mode: .copyToAssets) {
                     snippets.append(s.trimmingCharacters(in: .newlines))
+                } else {
+                    NSLog("Markdowner: failed to import dropped image %@", url.path)
                 }
             }
             guard !snippets.isEmpty else {
@@ -927,6 +1336,16 @@ struct RichMarkdownTextView: NSViewRepresentable {
 
         func insertPastedImage(_ image: NSImage) {
             guard !isReadOnly else { return }
+            // Paste may embed only when unsaved; when saved, must land in assets/.
+            if MarkdownImage.canWriteAssets {
+                if let s = MarkdownImage.markdownSnippet(forImage: image) {
+                    insertMarkdownSnippet(s)
+                } else {
+                    presentImageNeedsSaveAlert()
+                }
+                return
+            }
+            // Unsaved: embed so screenshots still work.
             if let s = MarkdownImage.markdownSnippet(forImage: image) {
                 insertMarkdownSnippet(s)
             } else {
@@ -934,31 +1353,131 @@ struct RichMarkdownTextView: NSViewRepresentable {
             }
         }
 
-        private func insertMarkdownSnippet(_ snippet: String) {
-            // Prefer end of document for drop; paste at selection if available.
-            if let tv = textView, tv.selectedRange().location != NSNotFound,
-               tv.selectedRange().location <= (tv.string as NSString).length {
-                let range = tv.selectedRange()
-                if tv.shouldChangeText(in: range, replacementString: snippet) {
-                    // Insert into markdown binding via string splice for reliable round-trip.
-                    let ns = text.wrappedValue as NSString
-                    // Map rich selection to end of markdown is hard; append is safer after re-parse.
-                    _ = ns
-                }
+        /// Drag an existing image attachment to a new place in the document.
+        func moveImage(src: String, alt: String, fromChar: Int, toChar: Int) {
+            guard !isReadOnly else { return }
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let fullLen = storage.length
+            guard fromChar >= 0, fromChar < fullLen else { return }
+
+            // Attachment is one character (object replacement) in the text storage.
+            var removeRange = NSRange(location: fromChar, length: 1)
+            // Expand if a longer run shares the same image src (defensive).
+            var eff = NSRange(location: 0, length: 0)
+            if let s = storage.attribute(MarkdownImage.srcKey, at: fromChar, effectiveRange: &eff) as? String,
+               s == src, eff.length > 0 {
+                removeRange = eff
             }
-            let next = text.wrappedValue + (text.wrappedValue.hasSuffix("\n") ? "" : "\n") + snippet
+
+            let beforeRemove = storage.attributedSubstring(
+                from: NSRange(location: 0, length: removeRange.location)
+            )
+            let afterRemove = storage.attributedSubstring(
+                from: NSRange(
+                    location: removeRange.location + removeRange.length,
+                    length: fullLen - removeRange.location - removeRange.length
+                )
+            )
+            let without = NSMutableAttributedString(attributedString: beforeRemove)
+            without.append(afterRemove)
+
+            // Adjust destination for the removed range.
+            var dest = toChar
+            if dest > removeRange.location {
+                dest -= removeRange.length
+            }
+            dest = min(max(dest, 0), without.length)
+
+            let beforeInsert = without.attributedSubstring(from: NSRange(location: 0, length: dest))
+            let afterInsert = without.attributedSubstring(
+                from: NSRange(location: dest, length: without.length - dest)
+            )
+            let imageMD = MarkdownImage.markdown(alt: alt, src: src)
+            let next = joinMarkdown(
+                before: MarkdownRichText.markdown(from: beforeInsert),
+                insert: imageMD,
+                after: MarkdownRichText.markdown(from: afterInsert)
+            )
+
             lastMarkdown = next
             text.wrappedValue = next
             contentChanged = true
-            if let tv = textView {
-                tv.textStorage?.setAttributedString(MarkdownRichText.attributedString(from: next))
+            isEditing = true
+            let newAttr = MarkdownRichText.attributedString(from: next)
+            storage.setAttributedString(newAttr)
+
+            let caretAttr = MarkdownRichText.attributedString(
+                from: joinMarkdown(
+                    before: MarkdownRichText.markdown(from: beforeInsert),
+                    insert: imageMD,
+                    after: ""
+                )
+            )
+            let caret = min(caretAttr.length, newAttr.length)
+            tv.setSelectedRange(NSRange(location: caret, length: 0))
+            tv.scrollRangeToVisible(NSRange(location: max(0, caret - 1), length: 1))
+        }
+
+        /// Insert Markdown at the Write-mode caret / selection (not always end-of-document).
+        private func insertMarkdownSnippet(_ snippet: String) {
+            let snip = snippet.trimmingCharacters(in: CharacterSet.newlines)
+            guard !snip.isEmpty else { return }
+
+            guard let tv = textView, let storage = tv.textStorage else {
+                let next = joinMarkdown(before: text.wrappedValue, insert: snip, after: "")
+                lastMarkdown = next
+                text.wrappedValue = next
+                contentChanged = true
+                return
             }
+
+            // Use live rich text so the caret maps to the visual cursor / drop point.
+            let fullLen = storage.length
+            var range = tv.selectedRange()
+            if range.location == NSNotFound {
+                range = NSRange(location: fullLen, length: 0)
+            }
+            let loc = min(max(range.location, 0), fullLen)
+            let len = min(max(range.length, 0), fullLen - loc)
+
+            let beforeAttr = storage.attributedSubstring(from: NSRange(location: 0, length: loc))
+            let afterAttr = storage.attributedSubstring(
+                from: NSRange(location: loc + len, length: fullLen - loc - len)
+            )
+            let beforeMD = MarkdownRichText.markdown(from: beforeAttr)
+            let afterMD = MarkdownRichText.markdown(from: afterAttr)
+            let next = joinMarkdown(before: beforeMD, insert: snip, after: afterMD)
+
+            lastMarkdown = next
+            text.wrappedValue = next
+            contentChanged = true
+            isEditing = true
+
+            let newAttr = MarkdownRichText.attributedString(from: next)
+            storage.setAttributedString(newAttr)
+
+            // Place caret after the inserted block (best-effort: after `before` length in new attr).
+            let caretAttr = MarkdownRichText.attributedString(from: joinMarkdown(before: beforeMD, insert: snip, after: ""))
+            let caret = min(caretAttr.length, newAttr.length)
+            tv.setSelectedRange(NSRange(location: caret, length: 0))
+            tv.scrollRangeToVisible(NSRange(location: max(0, caret - 1), length: 1))
+        }
+
+        private func joinMarkdown(before: String, insert: String, after: String) -> String {
+            let b = before.trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+            let a = after.trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+            let mid = insert.trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+            var parts: [String] = []
+            if !b.isEmpty { parts.append(b) }
+            if !mid.isEmpty { parts.append(mid) }
+            if !a.isEmpty { parts.append(a) }
+            return parts.joined(separator: "\n\n")
         }
 
         private func presentImageNeedsSaveAlert() {
             let alert = NSAlert()
             alert.messageText = "Save the document first"
-            alert.informativeText = "Images are stored in an assets folder next to your Markdown file. Save the document, then drop or paste the image again.\n\nAlternatively use Insert Image… which can embed small images as data URLs."
+            alert.informativeText = "Images are copied into an assets/ folder next to your Markdown file so paths stay portable.\n\nSave the document (⌘S), then drop, paste, or insert the image again.\n\n(Unsaved buffers can still paste as an embedded data URL.)"
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
             alert.runModal()

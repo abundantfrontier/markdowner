@@ -234,27 +234,41 @@ enum MarkdownImage {
         case embedDataURL
     }
 
+    /// Prefer `assets/` whenever the document has a folder; embed only for unsaved buffers.
+    static func preferredInsertMode() -> InsertMode {
+        documentFolderForAssets() != nil ? .copyToAssets : .embedDataURL
+    }
+
+    /// True when we can write into `assets/` next to the open document.
+    static var canWriteAssets: Bool { documentFolderForAssets() != nil }
+
     /// Build Markdown snippet for a user-chosen image file.
+    /// - Returns `nil` when `copyToAssets` is required but the document isn’t saved yet
+    ///   (caller should prompt to save). Does **not** silently embed in that case.
     static func markdownSnippet(
         forFileURL url: URL,
-        mode: InsertMode = .copyToAssets
+        mode: InsertMode? = nil
     ) -> String? {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
         let alt = url.deletingPathExtension().lastPathComponent
+        let resolvedMode = mode ?? preferredInsertMode()
 
-        switch mode {
+        switch resolvedMode {
         case .copyToAssets:
-            if let rel = try? copyIntoAssets(from: url) {
+            do {
+                let rel = try copyIntoAssets(from: url)
                 return "\n\n\(markdown(alt: alt, src: rel))\n\n"
+            } catch ImageError.noDocumentFolder {
+                return nil
+            } catch {
+                NSLog("Markdowner: copy to assets failed: %@", error.localizedDescription)
+                return nil
             }
-            // Fall through to embed if no document directory yet
-            fallthrough
         case .embedDataURL:
             guard let data = try? Data(contentsOf: url) else { return nil }
-            if data.count > maxEmbedBytes, mode == .embedDataURL {
-                // Still embed but warn via NSLog; UI can alert later
+            if data.count > maxEmbedBytes {
                 NSLog("Markdowner: embedding large image (%d bytes)", data.count)
             }
             let mime = mimeType(for: url)
@@ -263,17 +277,50 @@ enum MarkdownImage {
         }
     }
 
+    /// Paste / screenshot: prefer `assets/`; only embed when there is no document folder.
     static func markdownSnippet(forImage image: NSImage, preferredName: String = "pasted") -> String? {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let data = rep.representation(using: .png, properties: [:])
         else { return nil }
 
-        if let rel = try? writeDataIntoAssets(data, preferredName: preferredName, ext: "png") {
-            return "\n\n\(markdown(alt: preferredName, src: rel))\n\n"
+        if canWriteAssets {
+            do {
+                let rel = try writeDataIntoAssets(data, preferredName: preferredName, ext: "png")
+                return "\n\n\(markdown(alt: preferredName, src: rel))\n\n"
+            } catch {
+                NSLog("Markdowner: paste to assets failed: %@", error.localizedDescription)
+                return nil
+            }
         }
+        // Unsaved document — embed so paste still works (single-file portability).
         let b64 = data.base64EncodedString()
         return "\n\n\(markdown(alt: preferredName, src: "data:image/png;base64,\(b64)"))\n\n"
+    }
+
+    /// File URL suitable for drag-out / Reveal (nil for pure data URLs until written to temp).
+    static func fileURLForDrag(src: String) -> URL? {
+        if src.hasPrefix("data:") { return nil }
+        return resolveFileURL(src)
+    }
+
+    /// Write image bytes to a unique temp file for drag-out when source is embedded.
+    static func temporaryFileForDrag(image: NSImage, preferredName: String = "image") -> URL? {
+        guard let data = pngData(from: image) else { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MarkdownerDrag", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let safe = preferredName
+            .replacingOccurrences(of: "/", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (safe.isEmpty ? "image" : safe) + ".png"
+        let url = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))-\(name)")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     static func copyIntoAssets(from source: URL) throws -> String {
